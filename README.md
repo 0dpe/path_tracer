@@ -50,7 +50,7 @@ This is a real-time GPU ray tracer that:
 ### Native (Desktop)
 
 ```bash
-git clone <repo>
+git clone https://github.com/0dpe/path_tracer.git
 cd path_tracer
 cargo run --release
 ```
@@ -60,7 +60,7 @@ cargo run --release
 ### Web (Browser)
 
 ```bash
-git clone <repo>
+git clone https://github.com/0dpe/path_tracer.git
 cd path_tracer
 wasm-pack build --target web
 
