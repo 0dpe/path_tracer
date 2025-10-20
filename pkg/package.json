@@ -1,0 +1,15 @@
+{
+  "name": "path_tracer",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "path_tracer_bg.wasm",
+    "path_tracer.js",
+    "path_tracer.d.ts"
+  ],
+  "main": "path_tracer.js",
+  "types": "path_tracer.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
