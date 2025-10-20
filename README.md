@@ -1,4 +1,4 @@
-# path_tracer
+# [path_tracer](https://0dpe.github.io/path_tracer/)
 
 A cross-platform **demo** GPU ray tracer built with Rust and WebGPU, demonstrating modern GPU programming techniques. Runs natively on Windows, macOS, and Linux, as well as in web browsers from the same codebase.
 
