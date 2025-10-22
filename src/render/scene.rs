@@ -255,7 +255,6 @@ impl Scene {
         true
     }
 
-    // TODO with fast movements, orientation locks to straight up or down, don't know why
     pub fn rotate_camera(&mut self, dx: f32, dy: f32, horizontal_sensitivity: f32, vertical_sensitivity: f32) {
         let yaw = -dx * horizontal_sensitivity;
         let pitch = -dy * vertical_sensitivity;
