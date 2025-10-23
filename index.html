@@ -16,6 +16,7 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             overflow: hidden;
+            background: black;
             width: 100vw;
             height: 100vh;
         }
@@ -135,8 +136,22 @@
     </div>
     <script type="module">
         import init from "./pkg/path_tracer.js";
-        // path_tracer.js only affects the canvas with the id "rust-insert-wasm"
-        init();
+
+        const instructions = document.getElementById('instructions');
+
+        if (!('gpu' in navigator)) {
+            instructions.innerHTML = `
+                <p>
+                    <strong>WebGPU not available.</strong>
+                    Your browser doesn't support WebGPU (or it's not enabled). This demo requires WebGPU to run.
+                    Try Chrome 113+ on desktop, or Firefox/Safari with feature flags enabled.
+                </p>
+            `;
+            instructions.style.background = 'rgba(180, 30, 30, 0.25)';
+            instructions.style.border = '1px solid rgba(255,255,255,0.12)';
+        } else {
+            init();
+        }
     </script>
 </body>
 
