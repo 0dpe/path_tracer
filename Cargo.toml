@@ -15,14 +15,14 @@ gltf = { version = "1.4.1", features = [
     "KHR_materials_emissive_strength",
 ]}
 bytemuck = { version = "1.24.0", features = ["derive"]}
-glam = { version = "0.30.8", features = ["bytemuck"]}
+glam = { version = "0.30.9", features = ["bytemuck"]}
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.7"
 console_log = "1.0.0"
-wasm-bindgen = "0.2.104"
-wasm-bindgen-futures = "0.4.54"
-web-sys = { version = "0.3.81", features = [
+wasm-bindgen = "0.2.105"
+wasm-bindgen-futures = "0.4.55"
+web-sys = { version = "0.3.82", features = [
     "Document",
     "Window",
     "Element",
@@ -30,8 +30,41 @@ web-sys = { version = "0.3.81", features = [
     "GpuCanvasContext",
     "Response",
 ]}
-js-sys = "0.3.81"
+js-sys = "0.3.82"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11.8"
 pollster = "0.4.0"
+
+[lints.rust]
+arithmetic_overflow = "warn"
+
+[lints.clippy]
+too_many_arguments = "allow"
+unused_self = "warn"
+unused_rounding = "warn"
+wildcard_imports = "warn"
+unused_result_ok = "warn"
+unneeded_field_pattern = "warn"
+unnecessary_unwrap = "warn"
+unnecessary_semicolon = "warn"
+unnecessary_literal_bound = "warn"
+unnecessary_join = "warn"
+tuple_array_conversions = "warn"
+suspicious_operation_groupings = "warn"
+single_match_else = "warn"
+semicolon_if_nothing_returned = "warn"
+ref_patterns = "warn"
+ref_option_ref = "warn"
+ref_option = "warn"
+ref_as_ptr = "warn"
+redundant_type_annotations = "warn"
+redundant_else = "warn"
+redundant_closure_for_method_calls = "warn"
+rc_buffer = "warn"
+panic = "warn"
+option_if_let_else = "warn"
+needless_pass_by_value = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_collect = "warn"
+manual_let_else = "warn"

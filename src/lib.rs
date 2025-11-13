@@ -159,7 +159,7 @@ impl winit::application::ApplicationHandler<State> for App {
                 winit::event::WindowEvent::CloseRequested => event_loop.exit(),
                 winit::event::WindowEvent::Resized(size) => state.resize(size.width, size.height),
                 winit::event::WindowEvent::RedrawRequested => state.update(),
-                winit::event::WindowEvent::KeyboardInput { event, .. } => state.key_event(event),
+                winit::event::WindowEvent::KeyboardInput { event, .. } => state.key_event(&event),
                 // mouse button events are just used for locking and hiding cursor
                 winit::event::WindowEvent::MouseInput {
                     state: mouse_state,
@@ -180,11 +180,10 @@ impl winit::application::ApplicationHandler<State> for App {
         _device_id: winit::event::DeviceId,
         event: winit::event::DeviceEvent,
     ) {
-        if let Some(state) = &mut self.state {
-            match event {
-                winit::event::DeviceEvent::MouseMotion { delta } => state.mouse_move_event(delta),
-                _ => {}
-            }
+        if let Some(state) = &mut self.state
+            && let winit::event::DeviceEvent::MouseMotion { delta } = event
+        {
+            state.mouse_move_event(delta);
         }
     }
 }

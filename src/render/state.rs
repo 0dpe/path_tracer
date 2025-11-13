@@ -409,7 +409,8 @@ impl State {
     }
 
     pub fn update(&mut self) {
-        if self.scene.move_camera(&self.pressed_keys, 0.1, 0.1) { // TODO movement speed is dependent on refresh rate. fix that
+        if self.scene.move_camera(&self.pressed_keys, 0.1, 0.1) {
+            // TODO movement speed is dependent on refresh rate. fix that
             self.queue.write_buffer(
                 &self.camera_buffer,
                 0,
@@ -430,22 +431,23 @@ impl State {
         }
     }
 
-    pub fn key_event(&mut self, key_event: winit::event::KeyEvent) {
+    pub fn key_event(&mut self, key_event: &winit::event::KeyEvent) {
         // ignore when the OS or browser generates multiple presses and releases while a key is held down
-        if !key_event.repeat && self.cursor_grab == winit::window::CursorGrabMode::Locked {
-            if let winit::keyboard::PhysicalKey::Code(code) = key_event.physical_key {
-                match key_event.state {
-                    winit::event::ElementState::Pressed => {
-                        self.pressed_keys.insert(code);
-                        log::info!("Key pressed: {:?}", code);
-                        self.window.request_redraw(); // TODO small optimization where a redraw isn't necessary if the key is not a movement key
-                    }
-                    winit::event::ElementState::Released => {
-                        self.pressed_keys.remove(&code);
-                        log::info!("Key released: {:?}", code);
-                        if key_event.physical_key == winit::keyboard::KeyCode::Escape {
-                            self.cycle_cursor_grab();
-                        }
+        if !key_event.repeat
+            && self.cursor_grab == winit::window::CursorGrabMode::Locked
+            && let winit::keyboard::PhysicalKey::Code(code) = key_event.physical_key
+        {
+            match key_event.state {
+                winit::event::ElementState::Pressed => {
+                    self.pressed_keys.insert(code);
+                    log::info!("Key pressed: {:?}", code);
+                    self.window.request_redraw(); // TODO small optimization where a redraw isn't necessary if the key is not a movement key
+                }
+                winit::event::ElementState::Released => {
+                    self.pressed_keys.remove(&code);
+                    log::info!("Key released: {:?}", code);
+                    if key_event.physical_key == winit::keyboard::KeyCode::Escape {
+                        self.cycle_cursor_grab();
                     }
                 }
             }
@@ -478,7 +480,7 @@ impl State {
             && button == winit::event::MouseButton::Left
         {
             self.cycle_cursor_grab();
-        };
+        }
     }
 
     // on wasm, set_cursor_grab() and set_cursor_visible() seem to work most of the time
@@ -489,36 +491,34 @@ impl State {
 
         match self.cursor_grab {
             winit::window::CursorGrabMode::None => {
-                match self
+                if let Err(e) = self
                     .window
                     .set_cursor_grab(winit::window::CursorGrabMode::Locked)
                 {
-                    Err(e) => log::error!("Cursor not grabbed: {}", e),
-                    Ok(()) => {
-                        self.window.set_cursor_visible(false);
-                        self.cursor_grab = winit::window::CursorGrabMode::Locked;
-                    }
-                };
+                    log::error!("Cursor not grabbed: {}", e);
+                } else {
+                    self.window.set_cursor_visible(false);
+                    self.cursor_grab = winit::window::CursorGrabMode::Locked;
+                }
             }
             winit::window::CursorGrabMode::Locked | winit::window::CursorGrabMode::Confined => {
-                match self
+                if let Err(e) = self
                     .window
                     .set_cursor_grab(winit::window::CursorGrabMode::None)
                 {
-                    Err(e) => log::error!("Cursor not released: {}", e),
-                    Ok(()) => {
-                        self.pressed_keys.clear();
-                        self.window.set_cursor_visible(true);
-                        self.cursor_grab = winit::window::CursorGrabMode::None;
-                    }
-                };
+                    log::error!("Cursor not released: {}", e);
+                } else {
+                    self.pressed_keys.clear();
+                    self.window.set_cursor_visible(true);
+                    self.cursor_grab = winit::window::CursorGrabMode::None;
+                }
             }
-        };
+        }
     }
 
     // render() is private and only called in update()
     // but, keeping this a separate function is nice
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    fn render(&self) -> Result<(), wgpu::SurfaceError> {
         log::info!("Called: render");
 
         // get the next surface texture for drawing that will be presented by the swapchain
@@ -547,10 +547,8 @@ impl State {
             compute_pass.set_bind_group(0, &self.compute_bind_group, &[]); // the u32 passed here, which is 0, matches with @group(0) in shader.wgsl
 
             let workgroup_size = 8; // matches with @compute @workgroup_size(8, 8, 1) in shader.wgsl
-            let workgroup_count_x =
-                (self.surface_config.width + workgroup_size - 1) / workgroup_size; // make sure that the entire texture is covered by 8x8 workgroups, since texture size should always equal surface_config size
-            let workgroup_count_y =
-                (self.surface_config.height + workgroup_size - 1) / workgroup_size;
+            let workgroup_count_x = self.surface_config.width.div_ceil(workgroup_size); // make sure that the entire texture is covered by 8x8 workgroups, since texture size should always equal surface_config size
+            let workgroup_count_y = self.surface_config.height.div_ceil(workgroup_size);
             compute_pass.dispatch_workgroups(workgroup_count_x, workgroup_count_y, 1);
         }
         {

@@ -120,15 +120,11 @@ impl Scene {
 
         let mut meshes: Vec<Mesh> = Vec::new();
 
-        // get a vec of notes in the default scene only
-        let nodes_iter = if let Some(scene) = document.default_scene() {
-            scene.nodes().collect::<Vec<_>>()
-        } else {
-            document.nodes().collect::<Vec<_>>()
-        };
-
         // collect meshes referenced by nodes
-        for node in nodes_iter {
+        for node in document.default_scene().map_or_else(
+            || document.nodes().collect::<Vec<_>>(),
+            |scene| scene.nodes().collect::<Vec<_>>(),
+        ) {
             // compute this node's transform matrix
             let model_mat = match node.transform() {
                 gltf::scene::Transform::Matrix { matrix } => {
@@ -160,12 +156,12 @@ impl Scene {
 
                         let positions: Vec<glam::Vec3> = match reader.read_positions() {
                             // type annotation necessary
-                            Some(it) => it.map(|arr| glam::Vec3::from_array(arr)).collect(), // collect the iterator
+                            Some(it) => it.map(glam::Vec3::from_array).collect(), // collect the iterator
                             None => continue, // if there are no positions (vertex positions), skip this primitive
                         };
 
                         let normals: Vec<glam::Vec3> = match reader.read_normals() {
-                            Some(it) => it.map(|arr| glam::Vec3::from_array(arr)).collect(),
+                            Some(it) => it.map(glam::Vec3::from_array).collect(),
                             None => continue, // if there are no normals, skip this primitive
                         };
 
@@ -180,10 +176,10 @@ impl Scene {
 
                         meshes.push(Mesh {
                             vertices,
-                            indices: match reader.read_indices() {
-                                Some(read_indices) => read_indices.into_u32().collect(),
-                                None => (0u32..positions.len() as u32).collect(), // if there's no indicies, generate just a vec of ascending u32s from 0 to positions.len()
-                            },
+                            indices: reader.read_indices().map_or_else(
+                                || (0u32..positions.len() as u32).collect(),
+                                |read_indices| read_indices.into_u32().collect(),
+                            ),
                             base_color: glam::Vec4::from(
                                 primitive
                                     .material() // for more matieral properties, this is where to get them
@@ -255,8 +251,14 @@ impl Scene {
         true
     }
 
-    // TODO after fast rotates camera lock to a pitch 
-    pub fn rotate_camera(&mut self, dx: f32, dy: f32, horizontal_sensitivity: f32, vertical_sensitivity: f32) {
+    // TODO after fast rotates camera lock to a pitch
+    pub fn rotate_camera(
+        &mut self,
+        dx: f32,
+        dy: f32,
+        horizontal_sensitivity: f32,
+        vertical_sensitivity: f32,
+    ) {
         let yaw = -dx * horizontal_sensitivity;
         let pitch = -dy * vertical_sensitivity;
 
