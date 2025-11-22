@@ -137,21 +137,32 @@
     <script type="module">
         import init from "./pkg/path_tracer.js";
 
-        const instructions = document.getElementById('instructions');
+        const instructions = document.getElementById("instructions");
 
-        if (!('gpu' in navigator)) {
-            instructions.innerHTML = `
-                <p>
-                    <strong>WebGPU not available.</strong>
-                    Your browser doesn't support WebGPU (or it's not enabled). This demo requires WebGPU to run.
-                    Try Chrome 113+ on desktop, or Firefox/Safari with feature flags enabled.
-                </p>
-            `;
-            instructions.style.background = 'rgba(180, 30, 30, 0.25)';
-            instructions.style.border = '1px solid rgba(255,255,255,0.12)';
-        } else {
-            init();
-        }
+        const showError = (message) => {
+            instructions.innerHTML = `<p><strong>WebGPU not available.</strong> ${message}</p>`;
+            Object.assign(instructions.style, {
+                background: "rgba(180, 30, 30, 0.25)",
+                border: "1px solid rgba(255, 255, 255, 0.12)",
+            });
+        };
+
+        (async () => {
+            if (!navigator.gpu) {
+                console.error("WebGPU not supported!");
+                showError(`Your browser doesn't support WebGPU (or it's not enabled). Try Chrome 113+ on desktop, or Firefox/Safari with feature flags enabled.`);
+                return;
+            }
+
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                await init();
+            } catch (error) {
+                console.error("WebGPU not supported:", error);
+                showError(error.message);
+                return;
+            }
+        })();
     </script>
 </body>
 

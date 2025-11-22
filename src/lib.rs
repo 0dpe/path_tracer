@@ -2,7 +2,7 @@ mod render;
 mod utils;
 
 use render::state::State;
-use utils::unwrap_universal::UnwrapUniversal;
+use utils::expect_universal::ExpectUniversal;
 
 // if target_arch is wasm32, apply wasm_bindgen(start)
 // this cfg_attr done because wasm_bindgen dependency isn't in scope for non-wasm
@@ -15,7 +15,7 @@ pub fn run() {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
-        console_log::init_with_level(log::Level::Info).unwrap_universal(); // the hierarchy of log is: Error Warn Info Debug Trace
+        console_log::init_with_level(log::Level::Info).expect_universal("Console log failed"); // the hierarchy of log is: Error Warn Info Debug Trace
     }
 
     // running on the web, this will show since console_log was initialized with level Info
@@ -27,7 +27,7 @@ pub fn run() {
 
     let event_loop = winit::event_loop::EventLoop::with_user_event()
         .build()
-        .unwrap_universal();
+        .expect_universal("Event loop building failed");
 
     // setting event loop control flow does not seem to make WindowEvents fire faster
     // triggering WindowEvent::RedrawRequested in a loop, redraws occur 60 times per second no matter if it's ControlFlow::Poll or ControlFlow::Wait
@@ -35,7 +35,9 @@ pub fn run() {
     // event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
     #[cfg(not(target_arch = "wasm32"))]
-    event_loop.run_app(&mut App::new()).unwrap_universal();
+    event_loop
+        .run_app(&mut App::new())
+        .expect_universal("Event loop run app failed");
     // some guides use run_app() for web as well, however, this is not recommended by winit 0.30+ docs
     // if run_app() was used for web, there would be an intentional JavaScript control flow error in the web console
 
@@ -84,11 +86,11 @@ impl winit::application::ApplicationHandler<State> for App {
 
             window_attributes = window_attributes.with_canvas(Some(
                 wgpu::web_sys::window() // becomes Option<web_sys::Window>
-                    .unwrap_universal() // becomes web_sys::Window
+                    .expect_universal("web_sys::Window unwrap failed") // becomes web_sys::Window
                     .document() // becomes Option<web_sys::Document>
-                    .unwrap_universal() // becomes web_sys::Document
+                    .expect_universal("web_sys::Document unwrap failed") // becomes web_sys::Document
                     .get_element_by_id(CANVAS_ID) // becomes Option<web_sys::Element>
-                    .unwrap_universal() // becomes web_sys::Element
+                    .expect_universal("web_sys::Element unwrap failed") // becomes web_sys::Element
                     .unchecked_into(), // becomes what .with_canvas() wants, a web_sys::HtmlCanvasElement
             ));
         }
@@ -97,13 +99,14 @@ impl winit::application::ApplicationHandler<State> for App {
         let window = std::sync::Arc::new(
             event_loop
                 .create_window(window_attributes)
-                .unwrap_universal(),
+                .expect_universal("Event loop create_window failed"),
         );
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             // use pollster async runtime/executor to await the future from State::new(window)
-            self.state = Some(pollster::block_on(State::new(window)).unwrap_universal()); // so, App owns and uses State
+            self.state =
+                Some(pollster::block_on(State::new(window)).expect_universal("State::new failed")); // so, App owns and uses State
             // for non-wasm, this is where self.state is set, and initialization is finished
         }
 
@@ -120,7 +123,11 @@ impl winit::application::ApplicationHandler<State> for App {
                     assert!(
                         proxy
                             // this essentially is a call to user_event()
-                            .send_event(State::new(window).await.unwrap_universal())
+                            .send_event(
+                                State::new(window)
+                                    .await
+                                    .expect_universal("State::new failed")
+                            )
                             .is_ok()
                     ) // .is_ok() on Result<T, E> returns true if Result<T, E> is Ok(T)
                 });

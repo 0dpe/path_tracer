@@ -400,10 +400,8 @@ impl State {
                 bytemuck::bytes_of(&self.scene.prepare_gpu_camera()),
             );
 
-            // sometimes on initial web page load, even though resize is called, render isn't called afterwards
+            // on initial window creation on MacOS, and sometimes on initial web page load, even though resize is called, render isn't called afterwards
             // so, force a render call here
-            // on native, this doesn't seem to be necessary since a resize should automatically trigger a RedrawRequested WindowEvent
-            #[cfg(target_arch = "wasm32")]
             self.window.request_redraw();
         }
     }
@@ -427,7 +425,7 @@ impl State {
                 let size = self.window.inner_size();
                 self.resize(size.width, size.height);
             }
-            Err(e) => log::error!("SurfaceError {}", e),
+            Err(e) => log::error!("SurfaceError {e}"),
         }
     }
 
@@ -440,12 +438,12 @@ impl State {
             match key_event.state {
                 winit::event::ElementState::Pressed => {
                     self.pressed_keys.insert(code);
-                    log::info!("Key pressed: {:?}", code);
+                    log::info!("Key pressed: {code:?}");
                     self.window.request_redraw(); // TODO small optimization where a redraw isn't necessary if the key is not a movement key
                 }
                 winit::event::ElementState::Released => {
                     self.pressed_keys.remove(&code);
-                    log::info!("Key released: {:?}", code);
+                    log::info!("Key released: {code:?}");
                     if key_event.physical_key == winit::keyboard::KeyCode::Escape {
                         self.cycle_cursor_grab();
                     }
@@ -456,7 +454,7 @@ impl State {
 
     pub fn mouse_move_event(&mut self, delta: (f64, f64)) {
         if self.cursor_grab == winit::window::CursorGrabMode::Locked {
-            log::info!("Called: mouse_move_event {:?}", delta);
+            log::info!("Called: mouse_move_event {delta:?}");
 
             let (dx, dy) = (delta.0 as f32, delta.1 as f32);
 
@@ -495,7 +493,7 @@ impl State {
                     .window
                     .set_cursor_grab(winit::window::CursorGrabMode::Locked)
                 {
-                    log::error!("Cursor not grabbed: {}", e);
+                    log::error!("Cursor not grabbed: {e}");
                 } else {
                     self.window.set_cursor_visible(false);
                     self.cursor_grab = winit::window::CursorGrabMode::Locked;
@@ -506,7 +504,7 @@ impl State {
                     .window
                     .set_cursor_grab(winit::window::CursorGrabMode::None)
                 {
-                    log::error!("Cursor not released: {}", e);
+                    log::error!("Cursor not released: {e}");
                 } else {
                     self.pressed_keys.clear();
                     self.window.set_cursor_visible(true);
