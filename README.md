@@ -6,7 +6,7 @@ A cross-platform **demo** GPU ray tracer built with Rust and WebGPU, demonstrati
 
 GPU programming offers massive parallelism for graphics and compute workloads, but has historically been fragmented across incompatible APIs:
 
-* **OpenGL**: Aging API with inconsistent driver support
+* **OpenGL**: Relatively old, high-level and opaque 
 * **DirectX**: Windows-only
 * **Metal**: Apple platforms only
 * **Vulkan**: Verbose, complex to learn
