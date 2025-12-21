@@ -2,22 +2,6 @@
 
 A cross-platform **demo** GPU ray tracer built with Rust and WebGPU, demonstrating modern GPU programming techniques. Runs natively on Windows, macOS, and Linux, as well as in web browsers from the same codebase.
 
-## Why WebGPU?
-
-GPU programming offers massive parallelism for graphics and compute workloads, but has historically been fragmented across incompatible APIs:
-
-* **OpenGL**: Relatively old, high-level and opaque 
-* **DirectX**: Windows-only
-* **Metal**: Apple platforms only
-* **Vulkan**: Verbose, complex to learn
-* **CUDA & OpenCL**: Compute-focused, vendor-specific or limited adoption
-
-Unlike CPU code that runs anywhere with minimal changes, GPU developers traditionally had to choose between portability and access to modern features.
-
-WebGPU solves this. It's a modern, cross-platform GPU API that provides a single interface across all major platforms and browsers. WebGPU maps efficiently to DirectX 12, Metal, and Vulkan under the hood without sacrificing performance. The W3C WebGPU spec reached a Candidate Recommendation Draft in 2025.
-
-This project demonstrates WebGPU capabilities using **wgpu** (the Rust implementation) and serves as a practical learning resource for modern GPU programming.
-
 ## What It Does
 
 This is a real-time GPU ray tracer that:
@@ -87,3 +71,19 @@ path_tracer/
 ├── Cargo.toml           # Dependencies and wgpu version
 └── index.html           # Webpage
 ```
+
+## Why WebGPU?
+
+GPU programming offers massive parallelism for graphics and compute workloads, but has historically been fragmented across incompatible APIs:
+
+* **OpenGL**: Relatively old, high-level and opaque 
+* **DirectX**: Windows-only
+* **Metal**: Apple platforms only
+* **Vulkan**: Verbose, complex to learn
+* **CUDA & OpenCL**: Compute-focused, vendor-specific or limited adoption
+
+Unlike CPU code that runs anywhere with minimal changes, GPU code has traditionally required developers to choose between portability, modern features, and accessibility.
+
+WebGPU solves this. It's a modern, cross-platform GPU API that provides a single interface across all major platforms and browsers. WebGPU maps efficiently to DirectX 12, Metal, and Vulkan without sacrificing performance. The W3C WebGPU spec reached a Candidate Recommendation Draft in 2025.
+
+This project demonstrates WebGPU capabilities using **wgpu** (the Rust implementation) and serves as a practical demo for modern GPU programming.
