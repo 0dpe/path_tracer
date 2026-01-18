@@ -167,6 +167,7 @@ impl State {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -258,7 +259,7 @@ impl State {
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("path_tracer compute pipeline layout"),
                     bind_group_layouts: &[&compute_bind_group_layout],
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 }),
             ),
             module: &shader,
@@ -272,7 +273,7 @@ impl State {
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("path_tracer pipeline layout"),
                     bind_group_layouts: &[&render_bind_group_layout],
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 }),
             ),
             vertex: wgpu::VertexState {
@@ -305,7 +306,7 @@ impl State {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -565,6 +566,7 @@ impl State {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(&self.render_pipeline);

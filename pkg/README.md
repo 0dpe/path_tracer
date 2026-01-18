@@ -2,22 +2,6 @@
 
 A cross-platform **demo** GPU ray tracer built with Rust and WebGPU, demonstrating modern GPU programming techniques. Runs natively on Windows, macOS, and Linux, as well as in web browsers from the same codebase.
 
-## Why WebGPU?
-
-GPU programming offers massive parallelism for graphics and compute workloads, but has historically been fragmented across incompatible APIs:
-
-* **OpenGL**: Aging API with inconsistent driver support
-* **DirectX**: Windows-only
-* **Metal**: Apple platforms only
-* **Vulkan**: Verbose, complex to learn
-* **CUDA & OpenCL**: Compute-focused, vendor-specific or limited adoption
-
-Unlike CPU code that runs anywhere with minimal changes, GPU developers traditionally had to choose between portability and access to modern features.
-
-WebGPU solves this. It's a modern, cross-platform GPU API that provides a single interface across all major platforms and browsers. WebGPU maps efficiently to DirectX 12, Metal, and Vulkan under the hood without sacrificing performance. The W3C WebGPU spec reached a Candidate Recommendation Draft in 2025.
-
-This project demonstrates WebGPU capabilities using **wgpu** (the Rust implementation) and serves as a practical learning resource for modern GPU programming.
-
 ## What It Does
 
 This is a real-time GPU ray tracer that:
@@ -26,7 +10,7 @@ This is a real-time GPU ray tracer that:
 * Runs the same Rust codebase natively (desktop) and on the web (via WebAssembly)
 * Uses compute shaders for ray-triangle intersection (Möller-Trumbore algorithm)
 * Handles first-person camera controls with keyboard and mouse input
-* Demonstrates core WebGPU (wgpu v27) concepts: bind groups, compute/vertex/fragment pipelines, WGSL compute/vertex/fragment shaders, storage textures, etc.
+* Demonstrates core WebGPU (wgpu v28) concepts: bind groups, compute/vertex/fragment pipelines, WGSL compute/vertex/fragment shaders, storage textures, etc.
 
 **Current Status**: This is a basic ray tracer skeleton (~1300 lines of code in total). It traces primary rays only and lacks features like recursive path tracing or acceleration structures (BVH).
 
@@ -52,7 +36,7 @@ This is a real-time GPU ray tracer that:
 ```bash
 git clone https://github.com/0dpe/path_tracer.git
 cd path_tracer
-cargo run --release
+cargo rr
 ```
 
 **Controls**: Left click the window, then use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> + <kbd>Left Shift</kbd>/<kbd>Space</kbd> to move, mouse to look around. Press <kbd>Esc</kbd> or click again to release cursor.
@@ -72,7 +56,7 @@ simple-http-server
 Open Chrome at `http://localhost:8000` and click on `index.html`. Same controls as native.
 
 > [!NOTE]
-> Requires a browser with WebGPU support (Chrome stable, Safari/Firefox with flags enabled as of 2025).
+> Requires a browser with WebGPU [support](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status "WebGPU Implementation Status") (Chrome 113+, Safari 26+, Firefox 145+).
 
 ## General Crate Structure
 
@@ -87,3 +71,19 @@ path_tracer/
 ├── Cargo.toml           # Dependencies and wgpu version
 └── index.html           # Webpage
 ```
+
+## Why WebGPU?
+
+GPU programming offers massive parallelism for graphics and compute workloads, but has historically been fragmented across incompatible APIs:
+
+* **OpenGL**: Relatively old, high-level and opaque 
+* **DirectX**: Windows-only
+* **Metal**: Apple platforms only
+* **Vulkan**: Verbose, complex to learn
+* **CUDA & OpenCL**: Compute-focused, vendor-specific or limited adoption
+
+Unlike CPU code that runs anywhere with minimal changes, GPU code has traditionally required developers to choose between portability, modern features, and accessibility.
+
+WebGPU solves this. It's a modern, cross-platform GPU API that provides a single interface across all major platforms and browsers. WebGPU maps efficiently to DirectX 12, Metal, and Vulkan without sacrificing performance. The W3C WebGPU spec reached a Candidate Recommendation Draft in 2025.
+
+This project demonstrates WebGPU capabilities using **wgpu** (the Rust implementation) and serves as a practical demo for modern GPU programming.
