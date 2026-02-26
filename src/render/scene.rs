@@ -30,12 +30,12 @@ struct Mesh {
 #[derive(Debug)]
 struct Camera {
     position: glam::Vec3, // camera position x, y, z in world space
-    // with identity orientation (0, 0, 0, 1), coordinate system:
     // -Z into the screen, +Y up the screen, +X to the right of the screen
-    orientation: glam::Quat, // camera orientation as a quaternion
-    fov_y: f32,              // vertical fov in degrees
-    aspect_ratio: f32,       // width/height of image plane
-    focus_dist: f32,         // distance to image plane in world space
+    // focus distance is not needed since this is a pinhole camera; focus distance is implicitly 1
+    fov_y: f32,        // vertical fov in degrees
+    aspect_ratio: f32, // width/height of image plane
+    yaw: f32,
+    pitch: f32,
 }
 
 #[repr(C, align(16))]
@@ -200,10 +200,10 @@ impl Scene {
             // this happens when the checkbox "+Y Up" is checked when exporting a .glb file in Blender
             camera: Camera {
                 position: glam::Vec3::new(-1.0, 0.0, 7.0), // TODO calculate a better starting position
-                orientation: glam::Quat::IDENTITY,
                 fov_y: 90.0,
                 aspect_ratio: 1.0,
-                focus_dist: 1.0,
+                yaw: 0.0,
+                pitch: 0.0,
             },
         })
     }
@@ -229,12 +229,12 @@ impl Scene {
             return false;
         }
 
-        let forward_world = self.camera.orientation.mul_vec3(glam::Vec3::Z);
+        let (sin_yaw, cos_yaw) = self.camera.yaw.sin_cos();
 
-        let forward_xz = glam::Vec3::new(forward_world.x, 0.0, forward_world.z).normalize();
-        let right_xz = glam::Vec3::new(forward_xz.z, 0.0, -forward_xz.x);
+        let forward_xz = glam::Vec3::new(-sin_yaw, 0.0, -cos_yaw);
+        let right_xz = glam::Vec3::new(cos_yaw, 0.0, -sin_yaw);
 
-        let forward_coeff = (if s { 1.0 } else { 0.0 }) - (if w { 1.0 } else { 0.0 });
+        let forward_coeff = (if w { 1.0 } else { 0.0 }) - (if s { 1.0 } else { 0.0 });
         let right_coeff = (if d { 1.0 } else { 0.0 }) - (if a { 1.0 } else { 0.0 });
 
         let intent = forward_xz * forward_coeff + right_xz * right_coeff;
@@ -258,28 +258,13 @@ impl Scene {
         horizontal_sensitivity: f32,
         vertical_sensitivity: f32,
     ) {
-        let yaw = -dx * horizontal_sensitivity;
-        let pitch = -dy * vertical_sensitivity;
+        self.camera.yaw -= dx * horizontal_sensitivity;
+        self.camera.pitch -= dy * vertical_sensitivity;
 
-        let mut new_rotation =
-            glam::Quat::from_axis_angle(glam::Vec3::Y, yaw) * self.camera.orientation;
-
-        let forward = new_rotation * glam::Vec3::NEG_Z;
-        let current_pitch = forward.y.asin();
-
-        let desired_pitch = current_pitch + pitch;
-        let clamped_pitch = desired_pitch.clamp(
-            -std::f32::consts::FRAC_PI_2 + 0.1,
-            std::f32::consts::FRAC_PI_2 - 0.1,
-        );
-
-        if (clamped_pitch - current_pitch).abs() > 0.0001 {
-            let right = new_rotation * glam::Vec3::X;
-            let pitch_quat = glam::Quat::from_axis_angle(right, clamped_pitch - current_pitch);
-            new_rotation = pitch_quat * new_rotation;
-        }
-
-        self.camera.orientation = new_rotation;
+        self.camera.pitch = self
+            .camera
+            .pitch
+            .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
     }
 
     pub fn prepare_gpu_triangle_material(&self) -> (Vec<GpuTriangle>, Vec<GpuMaterial>) {
@@ -315,18 +300,20 @@ impl Scene {
     pub fn prepare_gpu_camera(&self) -> GpuCamera {
         let cam = &self.camera;
 
-        let image_plane_height = 2.0 * (cam.fov_y.to_radians() / 2.0).tan() * cam.focus_dist;
+        let rotation_mat =
+            glam::Mat3::from_rotation_y(cam.yaw) * glam::Mat3::from_rotation_x(cam.pitch);
 
-        let orientation = cam.orientation.normalize(); // just to make sure
+        let image_plane_height = 2.0 * (cam.fov_y.to_radians() / 2.0).tan();
 
-        let horizontal3 =
-            orientation.mul_vec3(glam::Vec3::X).normalize() * cam.aspect_ratio * image_plane_height;
-        let vertical3 = orientation.mul_vec3(glam::Vec3::NEG_Y).normalize() * image_plane_height;
+        let horizontal3 = rotation_mat.mul_vec3(glam::Vec3::X).normalize()
+            * cam.aspect_ratio
+            * image_plane_height;
 
-        let lower_left_corner3 = cam.position
-            + orientation.mul_vec3(glam::Vec3::NEG_Z).normalize() * cam.focus_dist
-            - horizontal3 / 2.0
-            - vertical3 / 2.0;
+        let vertical3 = rotation_mat.mul_vec3(glam::Vec3::NEG_Y).normalize() * image_plane_height;
+
+        let forward3 = rotation_mat.mul_vec3(glam::Vec3::NEG_Z).normalize();
+
+        let lower_left_corner3 = cam.position + forward3 - horizontal3 / 2.0 - vertical3 / 2.0;
 
         GpuCamera {
             position: glam::Vec4::from((cam.position, 0.0)),
