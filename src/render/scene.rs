@@ -251,7 +251,6 @@ impl Scene {
         true
     }
 
-    // TODO after fast rotates camera lock to a pitch
     pub fn rotate_camera(
         &mut self,
         dx: f32,
@@ -284,8 +283,9 @@ impl Scene {
     }
 
     pub fn prepare_gpu_triangle_material(&self) -> (Vec<GpuTriangle>, Vec<GpuMaterial>) {
-        let mut gpu_triangles = Vec::new();
-        let mut gpu_materials = Vec::new();
+        let estimated_tri_count = self.meshes.iter().map(|m| m.indices.len() / 3).sum();
+        let mut gpu_triangles = Vec::with_capacity(estimated_tri_count);
+        let mut gpu_materials = Vec::with_capacity(self.meshes.len());
 
         for (material_index, mesh) in self.meshes.iter().enumerate() {
             for tri_indices in mesh.indices.chunks_exact(3) {
