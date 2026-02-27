@@ -84,6 +84,6 @@ GPU programming offers massive parallelism for graphics and compute workloads, b
 
 Unlike CPU code that runs anywhere with minimal changes, GPU code has traditionally required developers to choose between portability, modern features, and accessibility.
 
-WebGPU solves this. It's a modern, cross-platform GPU API that provides a single interface across all major platforms and browsers. WebGPU maps efficiently to DirectX 12, Metal, and Vulkan without sacrificing performance. The W3C WebGPU spec reached a Candidate Recommendation Draft in 2025.
+WebGPU is a solution. It's a modern, cross-platform GPU API that provides a single interface across major platforms and browsers. WebGPU maps efficiently to DirectX 12, Metal, and Vulkan without significantly sacrificing performance. The W3C WebGPU spec reached a Candidate Recommendation Draft in 2025.
 
 This project demonstrates WebGPU capabilities using **wgpu** (the Rust implementation) and serves as a practical demo for modern GPU programming.
