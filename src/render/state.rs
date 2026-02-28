@@ -17,7 +17,7 @@ pub struct State {
     compute_pipeline: wgpu::ComputePipeline, // compute pipeline, for all calculations
     render_pipeline: wgpu::RenderPipeline,   // render pipeline, just for full screen triangle
 
-    scene: Scene, // contains camera, triangles, materials, and functions to move the camera
+    scene: Scene, // contains camera, triangles, materials, and methods to move the camera
 
     triangle_buffer: wgpu::Buffer,
     material_buffer: wgpu::Buffer,
@@ -25,6 +25,8 @@ pub struct State {
 
     pressed_keys: std::collections::HashSet<winit::keyboard::KeyCode>, // keyboard keys currently pressed
     cursor_grab: winit::window::CursorGrabMode, // whether the cursor is currently grabbed
+
+    last_instant: web_time::Instant, // time of last update for dt calculation for movement speed scaling
 
     pub window: std::sync::Arc<winit::window::Window>, // represents a window
 }
@@ -370,6 +372,8 @@ impl State {
             pressed_keys: std::collections::HashSet::new(),
             cursor_grab: winit::window::CursorGrabMode::None,
 
+            last_instant: web_time::Instant::now(),
+
             window,
         })
     }
@@ -408,15 +412,19 @@ impl State {
     }
 
     pub fn update(&mut self) {
-        if self.scene.move_camera(&self.pressed_keys, 0.1, 0.1) {
-            // TODO movement speed is dependent on refresh rate. fix that
+        let dt = self.last_instant.elapsed().as_secs_f32();
+
+        self.last_instant = web_time::Instant::now();
+
+        if self
+            .scene
+            .move_camera(&self.pressed_keys, 6.0 * dt, 6.0 * dt)
+        {
             self.queue.write_buffer(
                 &self.camera_buffer,
                 0,
                 bytemuck::bytes_of(&self.scene.prepare_gpu_camera()),
             );
-            // this will call self.update() again, so movement and render() will be looping while keys are pressed
-            self.window.request_redraw();
         }
 
         match self.render() {
@@ -428,6 +436,9 @@ impl State {
             }
             Err(e) => log::error!("SurfaceError {e}"),
         }
+
+        // this will trigger RedrawRequested event, which is a call to self.update() again, which creates a loop at the vsync rate of the monitor
+        self.window.request_redraw();
     }
 
     pub fn key_event(&mut self, key_event: &winit::event::KeyEvent) {
@@ -440,7 +451,6 @@ impl State {
                 winit::event::ElementState::Pressed => {
                     self.pressed_keys.insert(code);
                     log::info!("Key pressed: {code:?}");
-                    self.window.request_redraw(); // TODO small optimization where a redraw isn't necessary if the key is not a movement key
                 }
                 winit::event::ElementState::Released => {
                     self.pressed_keys.remove(&code);
@@ -466,7 +476,6 @@ impl State {
                 0,
                 bytemuck::bytes_of(&self.scene.prepare_gpu_camera()),
             );
-            self.window.request_redraw(); // essentially a call to self.update()
         }
     }
 
