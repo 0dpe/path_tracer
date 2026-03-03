@@ -24,7 +24,7 @@ struct Mesh {
     // for triangle A and B, the indices would be parsed like so: A1, A2, A3, B1, B2, B3
     indices: Vec<u32>,
     base_color: glam::Vec4, // albedo color, should be RGBA
-    emissive: f32,          // emissivity intensity
+    emissive: glam::Vec4,   // emissive color in rgb, then strength in the 4th value
 }
 
 #[derive(Debug)]
@@ -60,8 +60,6 @@ pub struct GpuTriangle {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuMaterial {
     base_color: glam::Vec4,
-    // although emissive is just a number, use a Vec4 to satisfy alignment
-    // only the first value is meaningful
     emissive: glam::Vec4,
 }
 
@@ -119,6 +117,12 @@ impl Scene {
         let (document, buffers, _images) = gltf::import_slice(load_gltf_bytes(path).await?)?;
 
         let mut meshes: Vec<Mesh> = Vec::new();
+
+        // the 2 extensions enabled are KHR_materials_emissive_strength and KHR_materials_specular
+        // in Blender, with principled BSDF, if emission strength is larger than 1.0, KHR_materials_emissive_strength will automatically be used in the exported glTF file
+        document.extensions_used().for_each(|s| {
+            log::info!("glTF used extension: {s}");
+        });
 
         // collect meshes referenced by nodes
         for node in document.default_scene().map_or_else(
@@ -186,7 +190,12 @@ impl Scene {
                                     .pbr_metallic_roughness() // for metallic and roughness properties, and the texture, this is where to get them
                                     .base_color_factor(),
                             ),
-                            emissive: 1.0, // TODO actually parse emissivity later
+                            emissive: glam::Vec4::new(
+                                primitive.material().emissive_factor()[0],
+                                primitive.material().emissive_factor()[1],
+                                primitive.material().emissive_factor()[2],
+                                primitive.material().emissive_strength().unwrap_or_default(),
+                            ),
                         });
                     }
                 }
@@ -291,7 +300,7 @@ impl Scene {
 
             gpu_materials.push(GpuMaterial {
                 base_color: mesh.base_color,
-                emissive: glam::Vec4::new(mesh.emissive, 0.0, 0.0, 0.0),
+                emissive: mesh.emissive,
             });
         }
 

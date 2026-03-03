@@ -18,7 +18,7 @@ struct GpuTriangle {
 
 struct GpuMaterial {
     base_color: vec4<f32>,
-    emissive: vec4<f32>, // only the first value is used for now as a scalar
+    emissive: vec4<f32>, // r, g, b, strength
 };
 
 
@@ -156,7 +156,7 @@ fn compute_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // if there's no intersection between the ray and a triangle, then t = -1.0
     if (hit.t > 0.0) {
         let mat = materials[hit.material_index];
-        final_color = mat.base_color.rgb * (1.0 + mat.emissive.r); // only the first value in emissive is used for now
+        final_color = mat.base_color.rgb + mat.emissive.rgb * mat.emissive.w;
     }
     
     textureStore(screen, global_id.xy, vec4<f32>(final_color, 1.0));

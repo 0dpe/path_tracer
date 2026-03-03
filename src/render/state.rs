@@ -527,8 +527,6 @@ impl State {
     // render() is private and only called in update()
     // but, keeping this a separate function is nice
     fn render(&self) -> Result<(), wgpu::SurfaceError> {
-        log::info!("Called: render");
-
         // get the next surface texture for drawing that will be presented by the swapchain
         let output = self.surface.get_current_texture()?;
         let view = output
