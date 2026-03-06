@@ -38,9 +38,10 @@ struct Camera {
     pitch: f32,
 }
 
+// GpuTriangleGeometry and GpuTriangleAttribute are separate structs the shader fetches vertices much more frequently than normals
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)] // Clone and Copy are required by Pod
-pub struct GpuTriangle {
+pub struct GpuTriangleGeometry {
     // bytemuck::Pod requires alignment without padding
     // shader also requires padding https://www.w3.org/TR/WGSL/#alignment-and-size
     // although glam::Vec3A is 16 byte aligned, it has padding
@@ -49,10 +50,15 @@ pub struct GpuTriangle {
     // meshes are not passed to the GPU; instead, individual triangles themselves are passed
     // each triangle thus has a material index, which indicates which mesh the triangle is from
     p0: glam::Vec4,
-    n0: glam::Vec4,
     p1: glam::Vec4,
-    n1: glam::Vec4,
     p2: glam::Vec4,
+}
+
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuTriangleAttribute {
+    n0: glam::Vec4,
+    n1: glam::Vec4,
     n2: glam::Vec4,
 }
 
@@ -277,9 +283,17 @@ impl Scene {
             .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
     }
 
-    pub fn prepare_gpu_triangle_material(&self) -> (Vec<GpuTriangle>, Vec<GpuMaterial>) {
+    pub fn prepare_gpu_triangle_material(
+        &self,
+    ) -> (
+        Vec<GpuTriangleGeometry>,
+        Vec<GpuTriangleAttribute>,
+        Vec<GpuMaterial>,
+    ) {
         let estimated_tri_count = self.meshes.iter().map(|m| m.indices.len() / 3).sum();
-        let mut gpu_triangles = Vec::with_capacity(estimated_tri_count);
+        let mut gpu_triangles_geometry = Vec::with_capacity(estimated_tri_count);
+        let mut gpu_triangle_attribute = Vec::with_capacity(estimated_tri_count);
+
         let mut gpu_materials = Vec::with_capacity(self.meshes.len());
 
         for (material_index, mesh) in self.meshes.iter().enumerate() {
@@ -288,12 +302,15 @@ impl Scene {
                 let v1 = &mesh.vertices[tri_indices[1] as usize];
                 let v2 = &mesh.vertices[tri_indices[2] as usize];
 
-                gpu_triangles.push(GpuTriangle {
+                gpu_triangles_geometry.push(GpuTriangleGeometry {
                     p0: glam::Vec4::from((v0.position, material_index as f32)),
-                    n0: glam::Vec4::from((v0.normal, 0.0)),
                     p1: glam::Vec4::from((v1.position, 0.0)),
-                    n1: glam::Vec4::from((v1.normal, 0.0)),
                     p2: glam::Vec4::from((v2.position, 0.0)),
+                });
+
+                gpu_triangle_attribute.push(GpuTriangleAttribute {
+                    n0: glam::Vec4::from((v0.normal, 0.0)),
+                    n1: glam::Vec4::from((v1.normal, 0.0)),
                     n2: glam::Vec4::from((v2.normal, 0.0)),
                 });
             }
@@ -304,7 +321,11 @@ impl Scene {
             });
         }
 
-        (gpu_triangles, gpu_materials)
+        (
+            gpu_triangles_geometry,
+            gpu_triangle_attribute,
+            gpu_materials,
+        )
     }
 
     pub fn prepare_gpu_camera(&self) -> GpuCamera {

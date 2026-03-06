@@ -19,7 +19,8 @@ pub struct State {
 
     scene: Scene, // contains camera, triangles, materials, and methods to move the camera
 
-    triangle_buffer: wgpu::Buffer,
+    triangle_geometry_buffer: wgpu::Buffer,
+    triangle_attribute_buffer: wgpu::Buffer,
     material_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
 
@@ -27,6 +28,10 @@ pub struct State {
     cursor_grab: winit::window::CursorGrabMode, // whether the cursor is currently grabbed
 
     last_instant: web_time::Instant, // time of last update for dt calculation for movement speed scaling
+
+    fps_timer: f32,   // accumulates dt
+    fps_counter: u32, // counts frames within the current interval
+    current_fps: u32, // the stored FPS value; not necessary to be stored in the struct right now, but for display FPS in the UI, having it here would make that possible
 
     pub window: std::sync::Arc<winit::window::Window>, // represents a window
 }
@@ -40,7 +45,8 @@ fn create_bind_groups(
     compute_bind_group_layout: &wgpu::BindGroupLayout,
     render_bind_group_layout: &wgpu::BindGroupLayout,
     texture_size: &(u32, u32),
-    triangle_buffer: &wgpu::Buffer,
+    triangle_geometry_buffer: &wgpu::Buffer,
+    triangle_attribute_buffer: &wgpu::Buffer,
     material_buffer: &wgpu::Buffer,
     camera_buffer: &wgpu::Buffer,
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
@@ -72,14 +78,18 @@ fn create_bind_groups(
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: triangle_buffer.as_entire_binding(),
+                    resource: triangle_geometry_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: material_buffer.as_entire_binding(),
+                    resource: triangle_attribute_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
+                    resource: material_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
                     resource: camera_buffer.as_entire_binding(),
                 },
             ],
@@ -126,6 +136,7 @@ impl State {
                 force_fallback_adapter: false,
             })
             .await?;
+        log::info!("Using adapter: {}", adapter.get_info().name);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -192,7 +203,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // triangle
+                    // triangle geometry buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -203,7 +214,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // material
+                    // triangle attribute buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -214,9 +225,20 @@ impl State {
                         },
                         count: None,
                     },
-                    // camera
+                    // material
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // camera
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -314,15 +336,23 @@ impl State {
 
         // load and parse a glTF 2.0 file
         let scene = Scene::new("assets/simple.glb").await?;
-        let (gpu_triangles, gpu_materials) = scene.prepare_gpu_triangle_material();
+        let (gpu_triangles_geometry, gpu_triangle_attribute, gpu_materials) =
+            scene.prepare_gpu_triangle_material();
         let gpu_camera = scene.prepare_gpu_camera();
 
         use wgpu::util::DeviceExt; // for create_buffer_init()
-        let triangle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("path_tracer triangle buffer"),
-            contents: bytemuck::cast_slice(&gpu_triangles),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let triangle_geometry_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("path_tracer triangle geometry buffer"),
+                contents: bytemuck::cast_slice(&gpu_triangles_geometry),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let triangle_attribute_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("path_tracer triangle attribute buffer"),
+                contents: bytemuck::cast_slice(&gpu_triangle_attribute),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let material_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("path_tracer material buffer"),
             contents: bytemuck::cast_slice(&gpu_materials),
@@ -341,7 +371,8 @@ impl State {
             &compute_bind_group_layout,
             &render_bind_group_layout,
             &(surface_config.width, surface_config.height),
-            &triangle_buffer,
+            &triangle_geometry_buffer,
+            &triangle_attribute_buffer,
             &material_buffer,
             &camera_buffer,
         );
@@ -365,7 +396,8 @@ impl State {
 
             scene,
 
-            triangle_buffer,
+            triangle_geometry_buffer,
+            triangle_attribute_buffer,
             material_buffer,
             camera_buffer,
 
@@ -374,11 +406,17 @@ impl State {
 
             last_instant: web_time::Instant::now(),
 
+            fps_timer: 0.0,
+            fps_counter: 0,
+            current_fps: 0,
+
             window,
         })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
+        log::info!("Called: resize with width {width} and height {height}");
+
         if width > 0 && height > 0 {
             self.surface_config.width = width;
             self.surface_config.height = height;
@@ -392,7 +430,8 @@ impl State {
                 &self.compute_bind_group_layout,
                 &self.render_bind_group_layout,
                 &(width, height),
-                &self.triangle_buffer,
+                &self.triangle_geometry_buffer,
+                &self.triangle_attribute_buffer,
                 &self.material_buffer,
                 &self.camera_buffer,
             );
@@ -413,8 +452,18 @@ impl State {
 
     pub fn update(&mut self) {
         let dt = self.last_instant.elapsed().as_secs_f32();
-
         self.last_instant = web_time::Instant::now();
+
+        self.fps_timer += dt;
+        self.fps_counter += 1;
+        if self.fps_timer >= 1.0 {
+            self.current_fps = self.fps_counter;
+
+            log::info!("FPS: {}", self.current_fps);
+
+            self.fps_timer -= 1.0; // -= 1.0 instead of = 0.0 prevents drifting over time
+            self.fps_counter = 0;
+        }
 
         if self
             .scene
@@ -465,8 +514,6 @@ impl State {
 
     pub fn mouse_move_event(&mut self, delta: (f64, f64)) {
         if self.cursor_grab == winit::window::CursorGrabMode::Locked {
-            log::info!("Called: mouse_move_event {delta:?}");
-
             let (dx, dy) = (delta.0 as f32, delta.1 as f32);
 
             self.scene.rotate_camera(dx, dy, 0.003, 0.003);

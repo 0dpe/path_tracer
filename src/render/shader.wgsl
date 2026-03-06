@@ -7,12 +7,15 @@ struct GpuCamera {
     vertical: vec4<f32>, // vector that spans the full y of image plane in world space
 };
 
-struct GpuTriangle {
+struct GpuTriangleGeometry {
     p0: vec4<f32>, // p0.w contains material index as a float
-    n0: vec4<f32>,
     p1: vec4<f32>,
-    n1: vec4<f32>,
     p2: vec4<f32>,
+};
+
+struct GpuTriangleAttribute {
+    n0: vec4<f32>,
+    n1: vec4<f32>,
     n2: vec4<f32>,
 };
 
@@ -38,9 +41,10 @@ struct HitRecord {
 };
 
 @group(0) @binding(0) var screen: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(1) var<storage, read> triangles: array<GpuTriangle>;
-@group(0) @binding(2) var<storage, read> materials: array<GpuMaterial>;
-@group(0) @binding(3) var<uniform> camera: GpuCamera;
+@group(0) @binding(1) var<storage, read> triangles_geo: array<GpuTriangleGeometry>;
+@group(0) @binding(2) var<storage, read> triangles_attr: array<GpuTriangleAttribute>;
+@group(0) @binding(3) var<storage, read> materials: array<GpuMaterial>;
+@group(0) @binding(4) var<uniform> camera: GpuCamera;
 
 
 // creates a Ray with origin at camera and direction to a given image plane point
@@ -56,80 +60,76 @@ fn generate_camera_ray(uv: vec2<f32>) -> Ray {
     return ray;
 }
 
-// Möller–Trumbore ray–triangle intersection
-// given a Ray and a GpuTriangle, does Ray intersect with this GpuTriangle?
-// if no, return (-1.0, 0.0, 0.0)
-// if yes, return (distance along ray, first barycentric coordinate, second barycentric coordinate)
-// there are only 2 barycentric coordinates because if the coordinates are valid, they must sum to 1
-// matching https://w.wiki/y6d
-fn intersect_triangle(ray: Ray, tri: GpuTriangle) -> vec3<f32> {
-    let edge1 = tri.p1.xyz - tri.p0.xyz; // two edges spanning the triangle
-    let edge2 = tri.p2.xyz - tri.p0.xyz;
-    let ray_cross_edge2 = cross(ray.direction, edge2); // ray_cross_edge2 is perpendicular to ray.direction and edge2
-    let det = dot(edge1, ray_cross_edge2); // det measures how non-parallel the ray is to the plane the triangle is on 
-
-    if (det > -0.00001 && det < 0.00001) {
-        return vec3<f32>(-1.0, 0.0, 0.0); // ray is parallel to the triangle plane, so an intersection is impossible
-    }
-
-    let inv_det = 1.0 / det;
-    let s = ray.origin - tri.p0.xyz;
-    let u = inv_det * dot(s, ray_cross_edge2);
-    if (u < 0.0 || u > 1.0) {
-        return vec3<f32>(-1.0, 0.0, 0.0);
-    }
-
-    let s_cross_edge1 = cross(s, edge1);
-    let v = inv_det * dot(ray.direction, s_cross_edge1);
-    if (v < 0.0 || u + v > 1.0) {
-        return vec3<f32>(-1.0, 0.0, 0.0);
-    }
-    
-    let t = inv_det * dot(edge2, s_cross_edge1);
-
-    if (t > 0.00001) {
-        return vec3<f32>(t, u, v);
-    } else {
-        return vec3<f32>(-1.0, 0.0, 0.0);
-    }
-}
-
 fn trace(ray: Ray) -> HitRecord {
-    var closest_t = 1.0e+20; // init with a large value; used to determine which triangle is hit first
-    var hit_rec: HitRecord;
-    hit_rec.t = -1.0; // init t with a negative value, which means that there's no intersection found yet
+    var closest_t = 1.0e+20;
+    var hit_idx: i32 = -1;
+    var hit_u: f32 = 0.0;
+    var hit_v: f32 = 0.0;
 
-    let num_triangles = arrayLength(&triangles);
+    let num_triangles = arrayLength(&triangles_geo);
     // for the ray, check intersection with all triangles
+    // Möller–Trumbore algorithm: implementation based on https://w.wiki/y6d
     for (var i: u32 = 0u; i < num_triangles; i = i + 1u) {
-        let tri = triangles[i];
-        let intersection = intersect_triangle(ray, tri);
-        let t = intersection.x;
+        let p0 = triangles_geo[i].p0.xyz;
+        let edge1 = triangles_geo[i].p1.xyz - p0; // two edges spanning the triangle
+        let edge2 = triangles_geo[i].p2.xyz - p0;
 
-        if (t > 0.0 && t < closest_t) {
-            closest_t = t;
-            hit_rec.t = t;
-            hit_rec.p = ray.direction * t + ray.origin; // this matches f(x) = m * x + b, but in this case in 3D, f(x) outputs a vec3 point, which is the intersection point
-            hit_rec.material_index = u32(tri.p0.w); // extract material index from p0.w
-            
-            // interpolate normal using barycentric coordinates and normals
-            let u = intersection.y;
-            let v = intersection.z;
-            // only 2 barycentric coordinates are given, but we know that the point is valid inside the triangle so all coordinates must sum to 1
-            // so, the third barycentric coordinate can just be computed
-            let w = 1.0 - u - v;
-            let interpolated_normal = normalize(w * tri.n0.xyz + u * tri.n1.xyz + v * tri.n2.xyz);
-            
-            // determine face orientation
-            if (dot(ray.direction, interpolated_normal) < 0.0) {
-                hit_rec.front_face = true;
-                hit_rec.normal = interpolated_normal;
-            } else {
-                hit_rec.front_face = false;
-                hit_rec.normal = -interpolated_normal;
-            }
+        let ray_cross_edge2 = cross(ray.direction, edge2); // ray_cross_edge2 is perpendicular to ray.direction and edge2
+        let det = dot(edge1, ray_cross_edge2); // det measures how non-parallel the ray is to the plane the triangle is on 
+
+        // backface culling 
+        if (det < 0.00001) { 
+            continue; // ray is parallel to the triangle plane, so an intersection is impossible
+        }
+
+        let s = ray.origin - p0;
+        let u_unnorm = dot(s, ray_cross_edge2);
+        if (u_unnorm < 0.0 || u_unnorm > det) { continue; }
+
+        let s_cross_edge1 = cross(s, edge1);
+        let v_unnorm = dot(ray.direction, s_cross_edge1);
+        if (v_unnorm < 0.0 || u_unnorm + v_unnorm > det) { continue; }
+        
+        let t_unnorm = dot(edge2, s_cross_edge1);
+        if (t_unnorm < 0.00001 * det || t_unnorm >= closest_t * det) { continue; }
+
+        // only do expensive division if we found a new closest triangle
+        let inv_det = 1.0 / det;
+        closest_t = t_unnorm * inv_det;
+        hit_idx = i32(i);
+        hit_u = u_unnorm * inv_det;
+        hit_v = v_unnorm * inv_det;
+    }
+
+    var hit_rec: HitRecord;
+    hit_rec.t = -1.0;
+
+    if (hit_idx != -1) {
+        let geo = triangles_geo[u32(hit_idx)];
+        let attr = triangles_attr[u32(hit_idx)];
+        
+        hit_rec.t = closest_t;
+        hit_rec.p = ray.direction * closest_t + ray.origin; // this matches f(x) = m * x + b, but in this case in 3D, f(x) outputs a vec3 point, which is the intersection point
+        hit_rec.material_index = u32(geo.p0.w); // extract material index from p0.w
+
+        // interpolate normal using barycentric coordinates and normals
+        let u = hit_u;
+        let v = hit_v;
+        // only 2 barycentric coordinates are given, but we know that the point is valid inside the triangle so all coordinates must sum to 1
+        // so, the third barycentric coordinate can just be computed
+        let w = 1.0 - u - v;
+        let interpolated_normal = normalize(w * attr.n0.xyz + u * attr.n1.xyz + v * attr.n2.xyz);
+        
+        // determine face orientation
+        if (dot(ray.direction, interpolated_normal) < 0.0) {
+            hit_rec.front_face = true;
+            hit_rec.normal = interpolated_normal;
+        } else {
+            hit_rec.front_face = false;
+            hit_rec.normal = -interpolated_normal;
         }
     }
+
     return hit_rec;
 }
 
