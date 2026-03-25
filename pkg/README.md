@@ -12,7 +12,7 @@ This is a real-time GPU ray tracer that:
 * Handles first-person camera controls with keyboard and mouse input
 * Demonstrates core WebGPU (wgpu v28) concepts: bind groups, compute/vertex/fragment pipelines, WGSL compute/vertex/fragment shaders, storage textures, etc.
 
-**Current Status**: This is a basic ray tracer skeleton (~1300 lines of code in total). It traces primary rays only and lacks features like recursive path tracing or acceleration structures (BVH).
+**Current Status**: This is a basic ray tracer skeleton. It traces primary rays only and lacks features like recursive path tracing or acceleration structures (BVH).
 
 ## Build & Run
 

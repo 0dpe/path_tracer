@@ -105,8 +105,13 @@ impl winit::application::ApplicationHandler<State> for App {
         #[cfg(not(target_arch = "wasm32"))]
         {
             // use pollster async runtime/executor to await the future from State::new(window)
-            self.state =
-                Some(pollster::block_on(State::new(window)).expect_universal("State::new failed")); // so, App owns and uses State
+            self.state = Some(
+                pollster::block_on(State::new(
+                    window,
+                    event_loop.owned_display_handle(), // Supply the newly required display handle
+                ))
+                .expect_universal("State::new failed"),
+            );
             // for non-wasm, this is where self.state is set, and initialization is finished
         }
 
@@ -117,6 +122,10 @@ impl winit::application::ApplicationHandler<State> for App {
                 // .take() on Option<> makes the original value None, and returns the original value
                 // so after .take(), self.proxy is None, and self.proxy's previous value is matched with Some(proxy)
                 // matched with Some(proxy), proxy is EventLoopProxy<State> in this if let block
+
+                // Fetch display handle here so it's not bound across the async bounds incorrectly
+                let display_handle = event_loop.owned_display_handle();
+
                 wasm_bindgen_futures::spawn_local(async move {
                     // use the browser's async runtime
                     // assert panics if what's inside it doesn't evaluate to true
@@ -124,7 +133,7 @@ impl winit::application::ApplicationHandler<State> for App {
                         proxy
                             // this essentially is a call to user_event()
                             .send_event(
-                                State::new(window)
+                                State::new(window, display_handle) // Passed display_handle here
                                     .await
                                     .expect_universal("State::new failed")
                             )
