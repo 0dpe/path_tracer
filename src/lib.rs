@@ -56,6 +56,7 @@ struct App {
 }
 
 impl App {
+    #[allow(clippy::missing_const_for_fn)] // create_proxy() isn't const
     fn new(
         #[cfg(target_arch = "wasm32")] event_loop: &winit::event_loop::EventLoop<State>,
     ) -> Self {

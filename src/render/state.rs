@@ -336,7 +336,7 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let scene = Scene::new("assets/double_torus.glb").await?;
+        let scene = Scene::new("assets/simple.glb").await?;
         let (gpu_triangles_geometry, gpu_triangle_attribute, gpu_materials) =
             scene.prepare_gpu_triangle_material();
         let gpu_camera = scene.prepare_gpu_camera();
@@ -548,7 +548,7 @@ impl State {
                 self.resize(size.width, size.height);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                log::error!("Validation error in get_current_texture")
+                log::error!("Validation error in get_current_texture");
             }
         }
 

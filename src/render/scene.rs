@@ -80,6 +80,7 @@ pub struct GpuCamera {
 
 // private helper function used in new()
 // not included directly inside new because conditional compilation with variable scopes would get messy
+#[allow(clippy::unused_async)]
 async fn load_gltf_bytes(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
