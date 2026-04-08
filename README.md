@@ -10,7 +10,7 @@ This is a real-time GPU ray tracer that:
 * Runs the same Rust codebase natively (desktop) and on the web (via WebAssembly)
 * Uses compute shaders for ray-triangle intersection (Möller-Trumbore algorithm)
 * Handles first-person camera controls with keyboard and mouse input
-* Demonstrates core WebGPU (wgpu v28) concepts: bind groups, compute/vertex/fragment pipelines, WGSL compute/vertex/fragment shaders, storage textures, etc.
+* Demonstrates core WebGPU (wgpu) concepts: bind groups, compute/vertex/fragment pipelines, WGSL compute/vertex/fragment shaders, storage textures, etc.
 
 **Current Status**: This is a basic ray tracer skeleton. It traces primary rays only and lacks features like recursive path tracing or acceleration structures (BVH).
 
@@ -68,7 +68,7 @@ path_tracer/
 │   ├── render/          # WebGPU setup, shaders, scene loading
 │   ├── lib.rs           # Window management and event loop
 │   └── main.rs          # Native entry point
-├── Cargo.toml           # Dependencies and wgpu version
+├── Cargo.toml           # Dependencies including wgpu version
 └── index.html           # Webpage
 ```
 

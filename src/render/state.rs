@@ -336,7 +336,7 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let scene = Scene::new("assets/simple.glb").await?;
+        let scene = Scene::new("assets/cornell.glb").await?;
         let (gpu_triangles_geometry, gpu_triangle_attribute, gpu_materials) =
             scene.prepare_gpu_triangle_material();
         let gpu_camera = scene.prepare_gpu_camera();
@@ -565,11 +565,11 @@ impl State {
             match key_event.state {
                 winit::event::ElementState::Pressed => {
                     self.pressed_keys.insert(code);
-                    log::info!("Key pressed: {code:?}");
+                    // log::info!("Key pressed: {code:?}");
                 }
                 winit::event::ElementState::Released => {
                     self.pressed_keys.remove(&code);
-                    log::info!("Key released: {code:?}");
+                    // log::info!("Key released: {code:?}");
                     if key_event.physical_key == winit::keyboard::KeyCode::Escape {
                         self.cycle_cursor_grab();
                     }

@@ -215,7 +215,7 @@ impl Scene {
             // +Z upward, +X rightward, +Y into the screen
             // this happens when the checkbox "+Y Up" is checked when exporting a .glb file in Blender
             camera: Camera {
-                position: glam::Vec3::new(-1.0, 0.0, 6.0), // TODO calculate a better starting position
+                position: glam::Vec3::new(0.0, 1.0, 2.5), // TODO calculate a better starting position
                 fov_y: 90.0,
                 aspect_ratio: 1.0,
                 yaw: 0.0, // facing -Z, which is into the screen
