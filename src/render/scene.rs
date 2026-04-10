@@ -5,26 +5,11 @@
 
 #[derive(Debug)]
 pub struct Scene {
-    meshes: Vec<Mesh>,
+    pub geometries: Vec<GpuTriangleGeometry>,
+    pub attributes: Vec<GpuTriangleAttribute>,
+    pub materials: Vec<GpuMaterial>,
+    pub bvh_nodes: Vec<GpuBvhNode>,
     camera: Camera,
-}
-
-#[derive(Debug)]
-// each Vertex struct represents just a point
-struct Vertex {
-    position: glam::Vec3, // x, y, z
-    normal: glam::Vec3,   // x, y, z (normalized)
-}
-
-#[derive(Debug)]
-struct Mesh {
-    vertices: Vec<Vertex>,
-    // indices is the sequence of vertices
-    // if there are 6 Vertex structs in vertices, there would be 2 triangles, which means 6 values in indices
-    // for triangle A and B, the indices would be parsed like so: A1, A2, A3, B1, B2, B3
-    indices: Vec<u32>,
-    base_color: glam::Vec4, // albedo color, should be RGBA
-    emissive: glam::Vec4,   // emissive color in rgb, then strength in the 4th value
 }
 
 #[derive(Debug)]
@@ -66,7 +51,19 @@ pub struct GpuTriangleAttribute {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuMaterial {
     base_color: glam::Vec4,
-    emissive: glam::Vec4,
+    emissive: glam::Vec4, // emissive color in rgb, then strength in the 4th value
+}
+
+// if prim_count == 0, the node is an internal node, and left_first is the index of the left child
+// the right child is guaranteed to be immediately after left_first at left_first + 1
+// if prim_count > 0, the node is a leaf, and left_first is the starting offset into the geometry buffers
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuBvhNode {
+    aabb_min: [f32; 3],
+    left_first: u32,
+    aabb_max: [f32; 3],
+    prim_count: u32,
 }
 
 #[repr(C, align(16))]
@@ -76,6 +73,39 @@ pub struct GpuCamera {
     lower_left_corner: glam::Vec4, // lower-left pixel coordinate of image plane in world space
     horizontal: glam::Vec4,        // vector that spans the full x of image plane in world space
     vertical: glam::Vec4,          // vector that spans the full y of image plane in world space
+}
+
+// internal BVH helper structs
+#[derive(Clone, Copy, Debug)]
+struct Aabb {
+    min: glam::Vec3,
+    max: glam::Vec3,
+}
+impl Aabb {
+    const fn new() -> Self {
+        Self {
+            min: glam::Vec3::splat(f32::INFINITY),
+            max: glam::Vec3::splat(f32::NEG_INFINITY),
+        }
+    }
+    fn grow(&mut self, p: glam::Vec3) {
+        self.min = self.min.min(p);
+        self.max = self.max.max(p);
+    }
+    #[allow(clippy::use_self)]
+    fn union(&mut self, other: &Aabb) {
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+    }
+    fn area(&self) -> f32 {
+        let e = (self.max - self.min).max(glam::Vec3::ZERO);
+        e.z.mul_add(e.x, e.x.mul_add(e.y, e.y * e.z)) // e.x * e.y + e.y * e.z + e.z * e.x, but using mul_add for better precision and performance
+    }
+}
+#[derive(Clone, Copy)]
+struct PrimitiveInfo {
+    aabb: Aabb,
+    centroid: glam::Vec3,
 }
 
 // private helper function used in new()
@@ -123,7 +153,10 @@ impl Scene {
     pub async fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let (document, buffers, _images) = gltf::import_slice(load_gltf_bytes(path).await?)?;
 
-        let mut meshes: Vec<Mesh> = Vec::new();
+        let mut geometries = Vec::new();
+        let mut attributes = Vec::new();
+        let mut materials = Vec::new();
+        let mut prim_infos = Vec::new();
 
         // the 2 extensions enabled are KHR_materials_emissive_strength and KHR_materials_specular
         // in Blender, with principled BSDF, if emission strength is larger than 1.0, KHR_materials_emissive_strength will automatically be used in the exported glTF file
@@ -176,21 +209,13 @@ impl Scene {
                             None => continue, // if there are no normals, skip this primitive
                         };
 
-                        // build vertices, which holds Vertex structs
-                        let mut vertices: Vec<Vertex> = Vec::with_capacity(positions.len());
-                        for i in 0..positions.len() {
-                            vertices.push(Vertex {
-                                position: model_mat.transform_point3(positions[i]),
-                                normal: normal_mat.transform_vector3(normals[i]).normalize(),
-                            });
-                        }
+                        let indices: Vec<u32> = reader.read_indices().map_or_else(
+                            || (0u32..positions.len() as u32).collect(),
+                            |read_indices| read_indices.into_u32().collect(),
+                        );
 
-                        meshes.push(Mesh {
-                            vertices,
-                            indices: reader.read_indices().map_or_else(
-                                || (0u32..positions.len() as u32).collect(),
-                                |read_indices| read_indices.into_u32().collect(),
-                            ),
+                        let material_index = materials.len() as f32;
+                        materials.push(GpuMaterial {
                             base_color: glam::Vec4::from(
                                 primitive
                                     .material() // for more matieral properties, this is where to get them
@@ -204,13 +229,72 @@ impl Scene {
                                 primitive.material().emissive_strength().unwrap_or_default(),
                             ),
                         });
+
+                        for chunk in indices.chunks_exact(3) {
+                            let i0 = chunk[0] as usize;
+                            let i1 = chunk[1] as usize;
+                            let i2 = chunk[2] as usize;
+
+                            let p0 = model_mat.transform_point3(positions[i0]);
+                            let p1 = model_mat.transform_point3(positions[i1]);
+                            let p2 = model_mat.transform_point3(positions[i2]);
+
+                            let n0 = normal_mat.transform_vector3(normals[i0]).normalize();
+                            let n1 = normal_mat.transform_vector3(normals[i1]).normalize();
+                            let n2 = normal_mat.transform_vector3(normals[i2]).normalize();
+
+                            // calculate AABB and centroid for the BVH builder
+                            prim_infos.push(PrimitiveInfo {
+                                aabb: Aabb {
+                                    min: p0.min(p1).min(p2),
+                                    max: p0.max(p1).max(p2),
+                                },
+                                centroid: (p0 + p1 + p2) / 3.0,
+                            });
+
+                            geometries.push(GpuTriangleGeometry {
+                                p0: glam::Vec4::from((p0, material_index)),
+                                p1: glam::Vec4::from((p1, 0.0)),
+                                p2: glam::Vec4::from((p2, 0.0)),
+                            });
+
+                            attributes.push(GpuTriangleAttribute {
+                                n0: glam::Vec4::from((n0, 0.0)),
+                                n1: glam::Vec4::from((n1, 0.0)),
+                                n2: glam::Vec4::from((n2, 0.0)),
+                            });
+                        }
                     }
                 }
             }
         }
 
+        let mut bvh_nodes = vec![GpuBvhNode {
+            aabb_min: [0.0; 3],
+            left_first: 0,
+            aabb_max: [0.0; 3],
+            prim_count: 0,
+        }];
+
+        if !prim_infos.is_empty() {
+            let prim_count = prim_infos.len();
+            Self::update_node_bounds(0, &mut bvh_nodes, &prim_infos, 0, prim_count);
+            Self::subdivide(
+                0,
+                &mut bvh_nodes,
+                &mut prim_infos,
+                &mut geometries,
+                &mut attributes,
+                0,
+                prim_count,
+            );
+        }
+
         Ok(Self {
-            meshes,
+            geometries,
+            attributes,
+            materials,
+            bvh_nodes,
             // with this camera orientation, Blender exported .glb files will appear in this orientation expressed in Blender's coordinate system:
             // +Z upward, +X rightward, +Y into the screen
             // this happens when the checkbox "+Y Up" is checked when exporting a .glb file in Blender
@@ -222,6 +306,203 @@ impl Scene {
                 pitch: 0.0,
             },
         })
+    }
+
+    // updates bounding box for a given node based on triangles it spans
+    fn update_node_bounds(
+        node_idx: usize,
+        nodes: &mut [GpuBvhNode],
+        prim_infos: &[PrimitiveInfo],
+        start: usize,
+        end: usize,
+    ) {
+        let mut aabb = Aabb::new();
+        for info in &prim_infos[start..end] {
+            aabb.union(&info.aabb);
+        }
+        nodes[node_idx].aabb_min = aabb.min.to_array();
+        nodes[node_idx].aabb_max = aabb.max.to_array();
+    }
+    // binning SAH sub-divider
+    fn subdivide(
+        node_idx: usize,
+        nodes: &mut Vec<GpuBvhNode>,
+        prim_infos: &mut [PrimitiveInfo],
+        geometries: &mut [GpuTriangleGeometry],
+        attributes: &mut [GpuTriangleAttribute],
+        start: usize,
+        end: usize,
+    ) {
+        let prim_count = end - start;
+        // if there are 2 or fewer triangles, make this node a leaf; otherwise, keep subdividing
+        if prim_count <= 2 {
+            nodes[node_idx].left_first = start as u32;
+            nodes[node_idx].prim_count = prim_count as u32;
+            return;
+        }
+
+        // split based on not the edges of triangles; calculate bounding box that encapsulates only the centroids
+        let mut centroid_bounds = Aabb::new();
+        for info in &prim_infos[start..end] {
+            centroid_bounds.grow(info.centroid);
+        }
+
+        const BINS: usize = 8;
+        let mut best_axis = 0;
+        let mut best_split = 0;
+        let mut best_cost = f32::MAX;
+
+        for axis in 0..3 { // for axis in x, y, z
+            let bounds_min = centroid_bounds.min[axis];
+            let bounds_max = centroid_bounds.max[axis];
+            if bounds_min == bounds_max {
+                continue;
+            } // all primitive centroids are overlapping on this axis
+
+            let scale = BINS as f32 / (bounds_max - bounds_min);
+
+            #[derive(Clone, Copy)]
+            struct Bin {
+                count: u32,
+                bounds: Aabb,
+            }
+            let mut bins = [Bin {
+                count: 0,
+                bounds: Aabb::new(),
+            }; BINS];
+
+            for info in &prim_infos[start..end] {
+                let centroid = info.centroid[axis];
+                let mut bin_idx = ((centroid - bounds_min) * scale) as usize;
+                bin_idx = bin_idx.min(BINS - 1);
+                bins[bin_idx].count += 1;
+                bins[bin_idx].bounds.union(&info.aabb);
+            }
+
+            let mut left_area = [0.0; BINS - 1];
+            let mut left_count = [0; BINS - 1];
+            let mut right_area = [0.0; BINS - 1];
+            let mut right_count = [0; BINS - 1];
+
+            let mut left_box = Aabb::new();
+            let mut left_sum = 0;
+            for i in 0..BINS - 1 {
+                left_sum += bins[i].count;
+                left_box.union(&bins[i].bounds);
+                left_count[i] = left_sum;
+                left_area[i] = left_box.area();
+            }
+
+            let mut right_box = Aabb::new();
+            let mut right_sum = 0;
+            for i in (1..BINS).rev() {
+                right_sum += bins[i].count;
+                right_box.union(&bins[i].bounds);
+                right_count[i - 1] = right_sum;
+                right_area[i - 1] = right_box.area();
+            }
+
+            for i in 0..BINS - 1 {
+                let cost = (left_count[i] as f32)
+                    .mul_add(left_area[i], right_count[i] as f32 * right_area[i]);
+                if cost < best_cost {
+                    best_cost = cost;
+                    best_axis = axis;
+                    best_split = i;
+                }
+            }
+        }
+
+        let node_area = {
+            let e = glam::Vec3::from_array(nodes[node_idx].aabb_max)
+                - glam::Vec3::from_array(nodes[node_idx].aabb_min);
+            e.z.mul_add(e.x, e.x.mul_add(e.y, e.y * e.z)) // omitting 2.0 coefficient
+        };
+        let leaf_cost = prim_count as f32 * node_area;
+
+        // if making it a leaf is cheaper than the best SAH split, terminate here
+        if best_cost >= leaf_cost {
+            nodes[node_idx].left_first = start as u32;
+            nodes[node_idx].prim_count = prim_count as u32;
+            return;
+        }
+
+        // partitioning primitives, geometries, and attributes arrays in place
+        let bounds_min = centroid_bounds.min[best_axis];
+        let bounds_max = centroid_bounds.max[best_axis];
+        let scale = BINS as f32 / (bounds_max - bounds_min);
+
+        let mut left = start;
+        let mut right = end - 1;
+
+        while left <= right {
+            let centroid = prim_infos[left].centroid[best_axis];
+            let mut bin_idx = ((centroid - bounds_min) * scale) as usize;
+            bin_idx = bin_idx.min(BINS - 1);
+
+            if bin_idx <= best_split {
+                left += 1;
+            } else {
+                prim_infos.swap(left, right);
+                geometries.swap(left, right);
+                attributes.swap(left, right);
+                if right == 0 {
+                    break;
+                } // safe guard against underflow 
+                right -= 1;
+            }
+        }
+
+        let split_idx = left;
+
+        // edge case: floats caused a weird partition leaving one side completely empty
+        if split_idx == start || split_idx == end {
+            nodes[node_idx].left_first = start as u32;
+            nodes[node_idx].prim_count = prim_count as u32;
+            return;
+        }
+
+        // create child nodes contiguously (left, right)
+        let left_child_idx = nodes.len();
+        nodes.push(GpuBvhNode {
+            aabb_min: [0.0; 3],
+            left_first: 0,
+            aabb_max: [0.0; 3],
+            prim_count: 0,
+        });
+        let right_child_idx = nodes.len();
+        nodes.push(GpuBvhNode {
+            aabb_min: [0.0; 3],
+            left_first: 0,
+            aabb_max: [0.0; 3],
+            prim_count: 0,
+        });
+
+        nodes[node_idx].left_first = left_child_idx as u32;
+        nodes[node_idx].prim_count = 0; // 0 signals non-leaf internal node
+
+        Self::update_node_bounds(left_child_idx, nodes, prim_infos, start, split_idx);
+        Self::update_node_bounds(right_child_idx, nodes, prim_infos, split_idx, end);
+
+        // TODO: investigate if rayon will make this faster or slower; parallelism overhead might outweigh the speedup for small to medium scenes
+        Self::subdivide(
+            left_child_idx,
+            nodes,
+            prim_infos,
+            geometries,
+            attributes,
+            start,
+            split_idx,
+        );
+        Self::subdivide(
+            right_child_idx,
+            nodes,
+            prim_infos,
+            geometries,
+            attributes,
+            split_idx,
+            end,
+        );
     }
 
     pub fn resize_camera_aspect_ratio(&mut self, width: f32, height: f32) {
@@ -282,51 +563,6 @@ impl Scene {
             .camera
             .pitch
             .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
-    }
-
-    pub fn prepare_gpu_triangle_material(
-        &self,
-    ) -> (
-        Vec<GpuTriangleGeometry>,
-        Vec<GpuTriangleAttribute>,
-        Vec<GpuMaterial>,
-    ) {
-        let estimated_tri_count = self.meshes.iter().map(|m| m.indices.len() / 3).sum();
-        let mut gpu_triangles_geometry = Vec::with_capacity(estimated_tri_count);
-        let mut gpu_triangle_attribute = Vec::with_capacity(estimated_tri_count);
-
-        let mut gpu_materials = Vec::with_capacity(self.meshes.len());
-
-        for (material_index, mesh) in self.meshes.iter().enumerate() {
-            for tri_indices in mesh.indices.chunks_exact(3) {
-                let v0 = &mesh.vertices[tri_indices[0] as usize];
-                let v1 = &mesh.vertices[tri_indices[1] as usize];
-                let v2 = &mesh.vertices[tri_indices[2] as usize];
-
-                gpu_triangles_geometry.push(GpuTriangleGeometry {
-                    p0: glam::Vec4::from((v0.position, material_index as f32)),
-                    p1: glam::Vec4::from((v1.position, 0.0)),
-                    p2: glam::Vec4::from((v2.position, 0.0)),
-                });
-
-                gpu_triangle_attribute.push(GpuTriangleAttribute {
-                    n0: glam::Vec4::from((v0.normal, 0.0)),
-                    n1: glam::Vec4::from((v1.normal, 0.0)),
-                    n2: glam::Vec4::from((v2.normal, 0.0)),
-                });
-            }
-
-            gpu_materials.push(GpuMaterial {
-                base_color: mesh.base_color,
-                emissive: mesh.emissive,
-            });
-        }
-
-        (
-            gpu_triangles_geometry,
-            gpu_triangle_attribute,
-            gpu_materials,
-        )
     }
 
     pub fn prepare_gpu_camera(&self) -> GpuCamera {

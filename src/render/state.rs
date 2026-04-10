@@ -20,6 +20,7 @@ pub struct State {
     scene: Scene, // contains camera, triangles, materials, and methods to move the camera
 
     triangle_geometry_buffer: wgpu::Buffer,
+    bvh_buffer: wgpu::Buffer,
     triangle_attribute_buffer: wgpu::Buffer,
     material_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
@@ -46,6 +47,7 @@ fn create_bind_groups(
     render_bind_group_layout: &wgpu::BindGroupLayout,
     texture_size: &(u32, u32),
     triangle_geometry_buffer: &wgpu::Buffer,
+    bvh_buffer: &wgpu::Buffer,
     triangle_attribute_buffer: &wgpu::Buffer,
     material_buffer: &wgpu::Buffer,
     camera_buffer: &wgpu::Buffer,
@@ -82,14 +84,18 @@ fn create_bind_groups(
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: triangle_attribute_buffer.as_entire_binding(),
+                    resource: bvh_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: material_buffer.as_entire_binding(),
+                    resource: triangle_attribute_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
+                    resource: material_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
                     resource: camera_buffer.as_entire_binding(),
                 },
             ],
@@ -138,11 +144,21 @@ impl State {
             })
             .await?;
         log::info!("Using adapter: {}", adapter.get_info().name); // doesn't log the name on web for some reason, but logs fine on native
+        let supported_limits = adapter.limits(); // get the maximum limits the physical hardware supports
+        log::info!(
+            "Largest possible storage buffer binding size: {} MiB",
+            supported_limits.max_storage_buffer_binding_size as f32 / 1024.0 / 1024.0
+        );
+        let required_limits = wgpu::Limits {
+            max_storage_buffer_binding_size: supported_limits.max_storage_buffer_binding_size, // the default is 128 MiB, which is too small for millions of triangles
+            max_buffer_size: supported_limits.max_buffer_size,
+            ..wgpu::Limits::default()
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits,
                 experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
@@ -204,7 +220,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // triangle geometry buffer
+                    // geometry buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -215,7 +231,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // triangle attribute buffer
+                    // bvh buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -226,7 +242,7 @@ impl State {
                         },
                         count: None,
                     },
-                    // material
+                    // triangle attribute buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -237,9 +253,20 @@ impl State {
                         },
                         count: None,
                     },
-                    // camera
+                    // material buffer
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // camera
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -336,27 +363,32 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let scene = Scene::new("assets/cornell.glb").await?;
-        let (gpu_triangles_geometry, gpu_triangle_attribute, gpu_materials) =
-            scene.prepare_gpu_triangle_material();
+        let scene = Scene::new("assets/dragon.glb").await?;
+
         let gpu_camera = scene.prepare_gpu_camera();
 
         use wgpu::util::DeviceExt; // for create_buffer_init()
+
         let triangle_geometry_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("path_tracer triangle geometry buffer"),
-                contents: bytemuck::cast_slice(&gpu_triangles_geometry),
+                contents: bytemuck::cast_slice(&scene.geometries),
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let bvh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("path_tracer bvh buffer"),
+            contents: bytemuck::cast_slice(&scene.bvh_nodes),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         let triangle_attribute_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("path_tracer triangle attribute buffer"),
-                contents: bytemuck::cast_slice(&gpu_triangle_attribute),
+                contents: bytemuck::cast_slice(&scene.attributes),
                 usage: wgpu::BufferUsages::STORAGE,
             });
         let material_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("path_tracer material buffer"),
-            contents: bytemuck::cast_slice(&gpu_materials),
+            contents: bytemuck::cast_slice(&scene.materials),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -373,6 +405,7 @@ impl State {
             &render_bind_group_layout,
             &(surface_config.width, surface_config.height),
             &triangle_geometry_buffer,
+            &bvh_buffer,
             &triangle_attribute_buffer,
             &material_buffer,
             &camera_buffer,
@@ -398,6 +431,7 @@ impl State {
             scene,
 
             triangle_geometry_buffer,
+            bvh_buffer,
             triangle_attribute_buffer,
             material_buffer,
             camera_buffer,
@@ -432,6 +466,7 @@ impl State {
                 &self.render_bind_group_layout,
                 &(width, height),
                 &self.triangle_geometry_buffer,
+                &self.bvh_buffer,
                 &self.triangle_attribute_buffer,
                 &self.material_buffer,
                 &self.camera_buffer,
