@@ -363,7 +363,7 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let scene = Scene::new("assets/dragon.glb").await?;
+        let scene = Scene::new("assets/cornell.glb").await?;
 
         let gpu_camera = scene.prepare_gpu_camera();
 
@@ -450,7 +450,7 @@ impl State {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        log::info!("Called: resize with width {width} and height {height}");
+        log::info!("Called: resize {width}x{height}");
 
         if width > 0 && height > 0 {
             self.surface_config.width = width;

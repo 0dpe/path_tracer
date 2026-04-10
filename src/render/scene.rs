@@ -276,6 +276,14 @@ impl Scene {
             prim_count: 0,
         }];
 
+        log::info!(
+            "Loaded scene with {} triangles, {} materials; starting BVH construction",
+            geometries.len(),
+            materials.len()
+        );
+
+        let bvh_construction_start = web_time::Instant::now();
+
         if !prim_infos.is_empty() {
             let prim_count = prim_infos.len();
             Self::update_node_bounds(0, &mut bvh_nodes, &prim_infos, 0, prim_count);
@@ -290,6 +298,8 @@ impl Scene {
             );
         }
 
+        log::info!("Finished BVH construction with {} nodes, took {:?}", bvh_nodes.len(), bvh_construction_start.elapsed());
+
         Ok(Self {
             geometries,
             attributes,
@@ -299,7 +309,7 @@ impl Scene {
             // +Z upward, +X rightward, +Y into the screen
             // this happens when the checkbox "+Y Up" is checked when exporting a .glb file in Blender
             camera: Camera {
-                position: glam::Vec3::new(0.0, 1.0, 2.5), // TODO calculate a better starting position
+                position: glam::Vec3::new(0.0, 1.0, 2.5), // TODO auto calculate a better starting position based on the scene's bounding box
                 fov_y: 90.0,
                 aspect_ratio: 1.0,
                 yaw: 0.0, // facing -Z, which is into the screen
@@ -352,7 +362,8 @@ impl Scene {
         let mut best_split = 0;
         let mut best_cost = f32::MAX;
 
-        for axis in 0..3 { // for axis in x, y, z
+        for axis in 0..3 {
+            // for axis in x, y, z
             let bounds_min = centroid_bounds.min[axis];
             let bounds_max = centroid_bounds.max[axis];
             if bounds_min == bounds_max {
