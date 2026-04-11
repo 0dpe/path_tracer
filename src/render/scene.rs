@@ -54,9 +54,9 @@ pub struct GpuMaterial {
     emissive: glam::Vec4, // emissive color in rgb, then strength in the 4th value
 }
 
-// if prim_count == 0, the node is an internal node, and left_first is the index of the left child
+// if prim_count == 0, the node is an internal node, and left_first is the index of the left child node in the Vec<GpuBvhNode>
 // the right child is guaranteed to be immediately after left_first at left_first + 1
-// if prim_count > 0, the node is a leaf, and left_first is the starting offset into the geometry buffers
+// if prim_count > 0, the node is a leaf, and left_first is instead the starting offset into Vec<GpuTriangleGeometry>, where the primitives contained in this leaf node are at indices left_first to left_first + prim_count - 1
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuBvhNode {
@@ -313,11 +313,12 @@ impl Scene {
             // +Z upward, +X rightward, +Y into the screen
             // this happens when the checkbox "+Y Up" is checked when exporting a .glb file in Blender
             camera: Camera {
-                position: glam::Vec3::new(0.0, 1.0, 2.5), // TODO auto calculate a better starting position based on the scene's bounding box
+                // 0.0, 1.0, 2.5 is good for cornell
+                position: glam::Vec3::new(-3.5, 0.5, 0.7), // TODO auto calculate a better starting position based on the scene's bounding box
                 fov_y: 90.0,
                 aspect_ratio: 1.0,
-                yaw: 0.0, // facing -Z, which is into the screen
-                pitch: 0.0,
+                yaw: 4.85, // facing -Z, which is into the screen
+                pitch: -0.1,
             },
         })
     }
@@ -521,6 +522,39 @@ impl Scene {
             split_idx,
             end,
         );
+    }
+
+    // override every primitive to use a unique debug material with a deterministic random albedo
+    pub fn debug_randomize_material_albedo(&mut self) {
+        self.materials.clear();
+        self.materials.reserve(self.geometries.len());
+
+        for (primitive_idx, geometry) in self.geometries.iter_mut().enumerate() {
+            let color = Self::debug_random_color(primitive_idx);
+            self.materials.push(GpuMaterial {
+                base_color: glam::Vec4::from((color, 1.0)),
+                emissive: glam::Vec4::ZERO,
+            });
+            geometry.p0.w = primitive_idx as f32;
+        }
+    }
+    #[allow(clippy::unreadable_literal)]
+    fn debug_random_color(index: usize) -> glam::Vec3 {
+        let mut seed = index as u64;
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        seed ^= seed >> 33;
+        seed = seed.wrapping_mul(0xff51afd7ed558ccd);
+        seed ^= seed >> 33;
+        seed = seed.wrapping_mul(0xc4ceb9fe1a85ec53);
+        seed ^= seed >> 33;
+
+        glam::Vec3::new(
+            f32::from((seed & 0xFF) as u8) / 255.0,
+            f32::from(((seed >> 8) & 0xFF) as u8) / 255.0,
+            f32::from(((seed >> 16) & 0xFF) as u8) / 255.0,
+        )
     }
 
     pub fn resize_camera_aspect_ratio(&mut self, width: f32, height: f32) {

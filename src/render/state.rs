@@ -363,7 +363,8 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let scene = Scene::new("assets/cornell.glb").await?;
+        let mut scene = Scene::new("assets/dragon.glb").await?;
+        scene.debug_randomize_material_albedo();
 
         let gpu_camera = scene.prepare_gpu_camera();
 
