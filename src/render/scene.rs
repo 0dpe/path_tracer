@@ -298,7 +298,11 @@ impl Scene {
             );
         }
 
-        log::info!("Finished BVH construction with {} nodes, took {:?}", bvh_nodes.len(), bvh_construction_start.elapsed());
+        log::info!(
+            "Finished BVH construction with {} nodes, took {:?}",
+            bvh_nodes.len(),
+            bvh_construction_start.elapsed()
+        );
 
         Ok(Self {
             geometries,
@@ -366,6 +370,7 @@ impl Scene {
             // for axis in x, y, z
             let bounds_min = centroid_bounds.min[axis];
             let bounds_max = centroid_bounds.max[axis];
+            #[allow(clippy::float_cmp)] // there should be no precision drift here
             if bounds_min == bounds_max {
                 continue;
             } // all primitive centroids are overlapping on this axis
@@ -384,6 +389,7 @@ impl Scene {
 
             for info in &prim_infos[start..end] {
                 let centroid = info.centroid[axis];
+                #[allow(clippy::cast_sign_loss)]
                 let mut bin_idx = ((centroid - bounds_min) * scale) as usize;
                 bin_idx = bin_idx.min(BINS - 1);
                 bins[bin_idx].count += 1;
@@ -448,6 +454,7 @@ impl Scene {
 
         while left <= right {
             let centroid = prim_infos[left].centroid[best_axis];
+            #[allow(clippy::cast_sign_loss)]
             let mut bin_idx = ((centroid - bounds_min) * scale) as usize;
             bin_idx = bin_idx.min(BINS - 1);
 

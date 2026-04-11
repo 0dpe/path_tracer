@@ -113,7 +113,7 @@ fn trace(ray: Ray) -> HitRecord {
             for (var i = 0u; i < node.prim_count; i += 1u) {
                 let tri_idx = node.left_first + i;
 
-                // Möller–Trumbore algorithm: implementation improved based on https://w.wiki/y6d
+                // Möller–Trumbore algorithm: implementation based on https://w.wiki/y6d
                 let p0 = triangles_geo[tri_idx].p0.xyz;
                 let edge1 = triangles_geo[tri_idx].p1.xyz - p0; // two edges spanning the triangle
                 let edge2 = triangles_geo[tri_idx].p2.xyz - p0;
@@ -142,7 +142,7 @@ fn trace(ray: Ray) -> HitRecord {
                     hit_v = v;
                 }
             }
-        } else { // internal node; push children
+        } else { // internal node; push children onto stack
             // left_first contains the index of the left child; right child is contiguous at left_first + 1
             stack[stack_ptr] = node.left_first + 1u; // push right
             stack_ptr += 1u;

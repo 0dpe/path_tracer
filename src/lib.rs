@@ -102,6 +102,7 @@ impl winit::application::ApplicationHandler<State> for App {
                 .create_window(window_attributes)
                 .expect_universal("Event loop create_window failed"),
         );
+        window.set_title("Path Tracer");
 
         #[cfg(not(target_arch = "wasm32"))]
         {
