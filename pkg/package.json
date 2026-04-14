@@ -1,7 +1,13 @@
 {
   "name": "path_tracer",
   "type": "module",
+  "description": "Demo Rust wgpu interactive path tracer.",
   "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/0dpe/path_tracer"
+  },
   "files": [
     "path_tracer_bg.wasm",
     "path_tracer.js",
