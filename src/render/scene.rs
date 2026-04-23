@@ -218,7 +218,7 @@ impl Scene {
                         materials.push(GpuMaterial {
                             base_color: glam::Vec4::from(
                                 primitive
-                                    .material() // for more matieral properties, this is where to get them
+                                    .material() // for more material properties, this is where to get them
                                     .pbr_metallic_roughness() // for metallic and roughness properties, and the texture, this is where to get them
                                     .base_color_factor(),
                             ),
@@ -524,37 +524,34 @@ impl Scene {
         );
     }
 
-    // override every primitive to use a unique debug material with a deterministic random albedo
+    // override every primitive to use a debug material with a deterministic random albedo
     pub fn debug_randomize_material_albedo(&mut self) {
         self.materials.clear();
         self.materials.reserve(self.geometries.len());
 
+        #[allow(clippy::unreadable_literal)]
         for (primitive_idx, geometry) in self.geometries.iter_mut().enumerate() {
-            let color = Self::debug_random_color(primitive_idx);
+            let mut seed = primitive_idx as u64;
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed ^= seed >> 33;
+            seed = seed.wrapping_mul(0xff51afd7ed558ccd);
+            seed ^= seed >> 33;
+            seed = seed.wrapping_mul(0xc4ceb9fe1a85ec53);
+            seed ^= seed >> 33;
+
             self.materials.push(GpuMaterial {
-                base_color: glam::Vec4::from((color, 1.0)),
+                base_color: glam::Vec4::from((
+                    f32::from((seed & 0xFF) as u8) / 255.0,
+                    f32::from(((seed >> 8) & 0xFF) as u8) / 255.0,
+                    f32::from(((seed >> 16) & 0xFF) as u8) / 255.0,
+                    1.0,
+                )),
                 emissive: glam::Vec4::ZERO,
             });
             geometry.p0.w = primitive_idx as f32;
         }
-    }
-    #[allow(clippy::unreadable_literal)]
-    fn debug_random_color(index: usize) -> glam::Vec3 {
-        let mut seed = index as u64;
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        seed ^= seed >> 33;
-        seed = seed.wrapping_mul(0xff51afd7ed558ccd);
-        seed ^= seed >> 33;
-        seed = seed.wrapping_mul(0xc4ceb9fe1a85ec53);
-        seed ^= seed >> 33;
-
-        glam::Vec3::new(
-            f32::from((seed & 0xFF) as u8) / 255.0,
-            f32::from(((seed >> 8) & 0xFF) as u8) / 255.0,
-            f32::from(((seed >> 16) & 0xFF) as u8) / 255.0,
-        )
     }
 
     pub fn resize_camera_aspect_ratio(&mut self, width: f32, height: f32) {

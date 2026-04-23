@@ -8,22 +8,22 @@ pub struct State {
 
     sampler: wgpu::Sampler, // defines how a pipeline will sample from a TextureView (like define filters)
 
-    compute_bind_group: wgpu::BindGroup, // set of resources that can be bound to ComputePass
-    render_bind_group: wgpu::BindGroup,  // set of resources that can be bound to RenderPass
+    // group 0 (dynamic)
+    compute_texture_bind_group: wgpu::BindGroup,
+    render_texture_bind_group: wgpu::BindGroup,
+    compute_texture_bind_group_layout: wgpu::BindGroupLayout,
+    render_texture_bind_group_layout: wgpu::BindGroupLayout,
 
-    compute_bind_group_layout: wgpu::BindGroupLayout, // used to create the bind group
-    render_bind_group_layout: wgpu::BindGroupLayout,  // used to create the bind group
+    // group 1 (static)
+    compute_scene_bind_group: wgpu::BindGroup,
+    camera_buffer: wgpu::Buffer,
 
     compute_pipeline: wgpu::ComputePipeline, // compute pipeline, for all calculations
     render_pipeline: wgpu::RenderPipeline,   // render pipeline, just for full screen triangle
 
-    scene: Scene, // contains camera, triangles, materials, and methods to move the camera
+    scene: Scene, // contains camera, triangles, materials, methods to move the camera, etc.
 
-    triangle_geometry_buffer: wgpu::Buffer,
-    bvh_buffer: wgpu::Buffer,
-    triangle_attribute_buffer: wgpu::Buffer,
-    material_buffer: wgpu::Buffer,
-    camera_buffer: wgpu::Buffer,
+    camera_dirty: bool, // to prevent duplicate GPU writes since multiple things can request camera movement
 
     pressed_keys: std::collections::HashSet<winit::keyboard::KeyCode>, // keyboard keys currently pressed
     cursor_grab: winit::window::CursorGrabMode, // whether the cursor is currently grabbed
@@ -39,22 +39,17 @@ pub struct State {
 
 // private helper function, not a method inside the impl because new() calls it
 // called in both State's new() and resize()
-// creates storage texture for storage texture view for compute and render bind groups
-fn create_bind_groups(
+// returns (compute bind group, render bind group)
+fn create_texture_bind_groups(
     device: &wgpu::Device,
     sampler: &wgpu::Sampler,
-    compute_bind_group_layout: &wgpu::BindGroupLayout,
-    render_bind_group_layout: &wgpu::BindGroupLayout,
+    compute_texture_layout: &wgpu::BindGroupLayout,
+    render_texture_layout: &wgpu::BindGroupLayout,
     texture_size: &(u32, u32),
-    triangle_geometry_buffer: &wgpu::Buffer,
-    bvh_buffer: &wgpu::Buffer,
-    triangle_attribute_buffer: &wgpu::Buffer,
-    material_buffer: &wgpu::Buffer,
-    camera_buffer: &wgpu::Buffer,
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
     let storage_texture_view = device
         .create_texture(&wgpu::TextureDescriptor {
-            label: Some("path_tracer storage texture"),
+            label: Some("Storage texture"),
             size: wgpu::Extent3d {
                 width: texture_size.0,
                 height: texture_size.1,
@@ -71,38 +66,16 @@ fn create_bind_groups(
 
     (
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("path_tracer compute bind group"),
-            layout: compute_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0, // matches with shader.wgsl @binding(0)
-                    resource: wgpu::BindingResource::TextureView(&storage_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: triangle_geometry_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: bvh_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: triangle_attribute_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: material_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-            ],
+            label: Some("Compute texture bind group"),
+            layout: compute_texture_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0, // matches with shader.wgsl @binding(0)
+                resource: wgpu::BindingResource::TextureView(&storage_texture_view),
+            }],
         }),
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("path_tracer render bind group"),
-            layout: render_bind_group_layout,
+            label: Some("Render texture bind group"),
+            layout: render_texture_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0, // matches with shader.wgsl @binding(0)
@@ -156,7 +129,7 @@ impl State {
         };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: None,
+                label: Some("Device"),
                 required_features: wgpu::Features::empty(),
                 required_limits,
                 experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
@@ -191,7 +164,7 @@ impl State {
         surface.configure(&device, &surface_config);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("path_tracer sampler"),
+            label: Some("Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -201,11 +174,10 @@ impl State {
             ..Default::default()
         });
 
-        // define compute and render bind group layouts
-        // these are only defined once here and do not change, but are used in many places
-        let compute_bind_group_layout =
+        // group 0: the storage texture for compute shader
+        let compute_texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("path_tracer compute bind group layout"),
+                label: Some("Compute texture bind group layout"),
                 entries: &[
                     // storage texture
                     wgpu::BindGroupLayoutEntry {
@@ -220,66 +192,13 @@ impl State {
                         },
                         count: None,
                     },
-                    // geometry buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // bvh buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // triangle attribute buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // material buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // camera
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
                 ],
             });
-        let render_bind_group_layout =
+
+        // group 0: the storage texture and sampler for render (fragment) shader
+        let render_texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("path_tracer render bind group layout"),
+                label: Some("Render texture bind group layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,                               // matches with shader.wgsl @binding(0)
@@ -300,17 +219,79 @@ impl State {
                 ],
             });
 
+        // group 1: the scene data buffers for compute shader
+        let compute_scene_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Scene bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0, // triangle geometry
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1, // bvh
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2, // triangle attributes
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3, // materials
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4, // camera
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
         // create a shader module from shader.wgsl
         // used for everything: compute, vertex, and fragment
         let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
 
         // configure compute and render pipelines with the bind group layouts and the shader module
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("path_tracer compute pipeline"),
+            label: Some("Compute pipeline"),
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("path_tracer compute pipeline layout"),
-                    bind_group_layouts: &[Some(&compute_bind_group_layout)],
+                    label: Some("Compute pipeline layout"),
+                    // takes both group 0 and 1
+                    bind_group_layouts: &[
+                        Some(&compute_texture_bind_group_layout),
+                        Some(&compute_scene_bind_group_layout),
+                    ],
                     immediate_size: 0,
                 }),
             ),
@@ -319,12 +300,14 @@ impl State {
             compilation_options: Default::default(),
             cache: None,
         });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("path_tracer pipeline"),
+            label: Some("Render pipeline"),
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("path_tracer pipeline layout"),
-                    bind_group_layouts: &[Some(&render_bind_group_layout)],
+                    label: Some("Render pipeline layout"),
+                    // only needs group 0
+                    bind_group_layouts: &[Some(&render_texture_bind_group_layout)],
                     immediate_size: 0,
                 }),
             ),
@@ -368,48 +351,66 @@ impl State {
 
         let gpu_camera = scene.prepare_gpu_camera();
 
-        use wgpu::util::DeviceExt; // for create_buffer_init()
+        use wgpu::util::DeviceExt; // for create_buffer_init
 
-        let triangle_geometry_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("path_tracer triangle geometry buffer"),
-                contents: bytemuck::cast_slice(&scene.geometries),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let bvh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("path_tracer bvh buffer"),
-            contents: bytemuck::cast_slice(&scene.bvh_nodes),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let triangle_attribute_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("path_tracer triangle attribute buffer"),
-                contents: bytemuck::cast_slice(&scene.attributes),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let material_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("path_tracer material buffer"),
-            contents: bytemuck::cast_slice(&scene.materials),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        // only this buffer (not geometry, bvh, etc.) is stored in the struct since it's the only one that's being updated when the program is running
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("path_tracer camera buffer"),
+            label: Some("Camera buffer"),
             contents: bytemuck::bytes_of(&gpu_camera),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // use helper function to create bind groups
-        let (compute_bind_group, render_bind_group) = create_bind_groups(
+        // buffer setup for group 1
+        // local helper function to initialize storage buffers
+        fn create_storage_buffer<T: bytemuck::Pod>(
+            device: &wgpu::Device,
+            label: &str,
+            data: &[T],
+        ) -> wgpu::Buffer {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(data),
+                usage: wgpu::BufferUsages::STORAGE,
+            })
+        }
+        let compute_scene_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compute scene bind group"),
+            layout: &compute_scene_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: create_storage_buffer(&device, "Geometry", &scene.geometries)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: create_storage_buffer(&device, "BVH", &scene.bvh_nodes)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: create_storage_buffer(&device, "Attributes", &scene.attributes)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: create_storage_buffer(&device, "Materials", &scene.materials)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // texture setup for group 0
+        let (compute_texture_bind_group, render_texture_bind_group) = create_texture_bind_groups(
             &device,
             &sampler,
-            &compute_bind_group_layout,
-            &render_bind_group_layout,
+            &compute_texture_bind_group_layout,
+            &render_texture_bind_group_layout,
             &(surface_config.width, surface_config.height),
-            &triangle_geometry_buffer,
-            &bvh_buffer,
-            &triangle_attribute_buffer,
-            &material_buffer,
-            &camera_buffer,
         );
 
         Ok(Self {
@@ -420,22 +421,20 @@ impl State {
 
             sampler,
 
-            compute_bind_group,
-            render_bind_group,
+            compute_texture_bind_group,
+            render_texture_bind_group,
+            compute_texture_bind_group_layout,
+            render_texture_bind_group_layout,
 
-            compute_bind_group_layout,
-            render_bind_group_layout,
+            camera_buffer,
+            compute_scene_bind_group,
 
             compute_pipeline,
             render_pipeline,
 
             scene,
 
-            triangle_geometry_buffer,
-            bvh_buffer,
-            triangle_attribute_buffer,
-            material_buffer,
-            camera_buffer,
+            camera_dirty: false,
 
             pressed_keys: std::collections::HashSet::new(),
             cursor_grab: winit::window::CursorGrabMode::None,
@@ -458,28 +457,22 @@ impl State {
             self.surface_config.height = height;
             self.surface.configure(&self.device, &self.surface_config);
 
-            // recreate bind groups with size of new storage texture matching new surface size
-            // recreating bind groups is necessary for a resize since storage texture size must match the surface size
-            (self.compute_bind_group, self.render_bind_group) = create_bind_groups(
+            // recreate texture group with size of new storage texture matching new surface size
+            // recreating bind group 0 is necessary for a resize since storage texture size must match the surface size
+            (
+                self.compute_texture_bind_group,
+                self.render_texture_bind_group,
+            ) = create_texture_bind_groups(
                 &self.device,
                 &self.sampler,
-                &self.compute_bind_group_layout,
-                &self.render_bind_group_layout,
+                &self.compute_texture_bind_group_layout,
+                &self.render_texture_bind_group_layout,
                 &(width, height),
-                &self.triangle_geometry_buffer,
-                &self.bvh_buffer,
-                &self.triangle_attribute_buffer,
-                &self.material_buffer,
-                &self.camera_buffer,
             );
 
             self.scene
                 .resize_camera_aspect_ratio(width as f32, height as f32);
-            self.queue.write_buffer(
-                &self.camera_buffer,
-                0,
-                bytemuck::bytes_of(&self.scene.prepare_gpu_camera()),
-            );
+            self.camera_dirty = true;
 
             // on initial window creation on MacOS, and sometimes on initial web page load, even though resize is called, render isn't called afterwards
             // so, force a render call here
@@ -506,11 +499,16 @@ impl State {
             .scene
             .move_camera(&self.pressed_keys, 6.0 * dt, 6.0 * dt)
         {
+            self.camera_dirty = true;
+        }
+
+        if self.camera_dirty {
             self.queue.write_buffer(
                 &self.camera_buffer,
                 0,
                 bytemuck::bytes_of(&self.scene.prepare_gpu_camera()),
             );
+            self.camera_dirty = false;
         }
 
         match self.surface.get_current_texture() {
@@ -524,7 +522,7 @@ impl State {
                 let mut encoder =
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("path_tracer encoder"),
+                            label: Some("Encoder"),
                         });
 
                 // compute and render passes
@@ -532,12 +530,13 @@ impl State {
                     // this is in a code block because begin_compute_pass() takes a &mut to encoder
                     let mut compute_pass =
                         encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("path_tracer compute pass"),
+                            label: Some("Compute pass"),
                             timestamp_writes: None,
                         });
 
                     compute_pass.set_pipeline(&self.compute_pipeline);
-                    compute_pass.set_bind_group(0, &self.compute_bind_group, &[]); // the u32 passed here, which is 0, matches with @group(0) in shader.wgsl
+                    compute_pass.set_bind_group(0, &self.compute_texture_bind_group, &[]); // the u32 passed here, which is 0, matches with @group(0) in shader.wgsl
+                    compute_pass.set_bind_group(1, &self.compute_scene_bind_group, &[]);
 
                     let workgroup_size = 8; // matches with @compute @workgroup_size(8, 8, 1) in shader.wgsl
                     let workgroup_count_x = self.surface_config.width.div_ceil(workgroup_size); // make sure that the entire texture is covered by 8x8 workgroups, since texture size should always equal surface_config size
@@ -547,7 +546,7 @@ impl State {
                 {
                     // this is in a code block because begin_compute_pass() takes a &mut to encoder
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("path_tracer render pass"),
+                        label: Some("Render pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &view,
                             depth_slice: None, // only useful for 3D textures
@@ -564,7 +563,7 @@ impl State {
                     });
 
                     render_pass.set_pipeline(&self.render_pipeline);
-                    render_pass.set_bind_group(0, &self.render_bind_group, &[]); // the u32 passed here, which is 0, matches with the @group(0) in shader.wgsl
+                    render_pass.set_bind_group(0, &self.render_texture_bind_group, &[]);
                     render_pass.draw(0..3, 0..1); // draw a triangle
                 }
 
@@ -619,12 +618,7 @@ impl State {
             let (dx, dy) = (delta.0 as f32, delta.1 as f32);
 
             self.scene.rotate_camera(dx, dy, 0.003, 0.003);
-
-            self.queue.write_buffer(
-                &self.camera_buffer,
-                0,
-                bytemuck::bytes_of(&self.scene.prepare_gpu_camera()),
-            );
+            self.camera_dirty = true;
         }
     }
 
