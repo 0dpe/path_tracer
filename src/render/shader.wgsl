@@ -31,6 +31,13 @@ struct GpuCamera {
     vertical: vec4<f32>, // vector that spans the full y of image plane in world space
 };
 
+@group(0) @binding(0) var screen: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(0) var<storage, read> triangles_geo: array<GpuTriangleGeometry>;
+@group(1) @binding(1) var<storage, read> bvh_nodes: array<BvhNode>;
+@group(1) @binding(2) var<storage, read> triangles_attr: array<GpuTriangleAttribute>;
+@group(1) @binding(3) var<storage, read> materials: array<GpuMaterial>;
+@group(1) @binding(4) var<uniform> camera: GpuCamera;
+
 struct Ray {
     origin: vec3<f32>, // camera origin position in world space
     // normalized, direction going from camera origin to a point on the image plane
@@ -46,13 +53,6 @@ struct HitRecord {
     material_index: u32,
     front_face: bool, // whether the triangle is front facing or not
 };
-
-@group(0) @binding(0) var screen: texture_storage_2d<rgba16float, write>;
-@group(1) @binding(0) var<storage, read> triangles_geo: array<GpuTriangleGeometry>;
-@group(1) @binding(1) var<storage, read> bvh_nodes: array<BvhNode>;
-@group(1) @binding(2) var<storage, read> triangles_attr: array<GpuTriangleAttribute>;
-@group(1) @binding(3) var<storage, read> materials: array<GpuMaterial>;
-@group(1) @binding(4) var<uniform> camera: GpuCamera;
 
 // creates a Ray with origin at camera and direction to a given image plane point
 // the image plane point is defined by uv, which has x and y normalized to 0 to 1

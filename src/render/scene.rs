@@ -60,9 +60,9 @@ pub struct GpuMaterial {
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuBvhNode {
-    aabb_min: [f32; 3],
+    aabb_min: glam::Vec3,
     left_first: u32,
-    aabb_max: [f32; 3],
+    aabb_max: glam::Vec3,
     prim_count: u32,
 }
 
@@ -270,9 +270,9 @@ impl Scene {
         }
 
         let mut bvh_nodes = vec![GpuBvhNode {
-            aabb_min: [0.0; 3],
+            aabb_min: glam::Vec3::ZERO,
             left_first: 0,
-            aabb_max: [0.0; 3],
+            aabb_max: glam::Vec3::ZERO,
             prim_count: 0,
         }];
 
@@ -335,8 +335,8 @@ impl Scene {
         for info in &prim_infos[start..end] {
             aabb.union(&info.aabb);
         }
-        nodes[node_idx].aabb_min = aabb.min.to_array();
-        nodes[node_idx].aabb_max = aabb.max.to_array();
+        nodes[node_idx].aabb_min = aabb.min;
+        nodes[node_idx].aabb_max = aabb.max;
     }
     // binning SAH sub-divider
     fn subdivide(
@@ -432,8 +432,7 @@ impl Scene {
         }
 
         let node_area = {
-            let e = glam::Vec3::from_array(nodes[node_idx].aabb_max)
-                - glam::Vec3::from_array(nodes[node_idx].aabb_min);
+            let e = nodes[node_idx].aabb_max - nodes[node_idx].aabb_min;
             e.z.mul_add(e.x, e.x.mul_add(e.y, e.y * e.z)) // omitting 2.0 coefficient
         };
         let leaf_cost = prim_count as f32 * node_area;
@@ -484,16 +483,16 @@ impl Scene {
         // create child nodes contiguously (left, right)
         let left_child_idx = nodes.len();
         nodes.push(GpuBvhNode {
-            aabb_min: [0.0; 3],
+            aabb_min: glam::Vec3::ZERO,
             left_first: 0,
-            aabb_max: [0.0; 3],
+            aabb_max: glam::Vec3::ZERO,
             prim_count: 0,
         });
         let right_child_idx = nodes.len();
         nodes.push(GpuBvhNode {
-            aabb_min: [0.0; 3],
+            aabb_min: glam::Vec3::ZERO,
             left_first: 0,
-            aabb_max: [0.0; 3],
+            aabb_max: glam::Vec3::ZERO,
             prim_count: 0,
         });
 
@@ -503,7 +502,6 @@ impl Scene {
         Self::update_node_bounds(left_child_idx, nodes, prim_infos, start, split_idx);
         Self::update_node_bounds(right_child_idx, nodes, prim_infos, split_idx, end);
 
-        // TODO: investigate if rayon will make this faster or slower; parallelism overhead might outweigh the speedup for small to medium scenes
         Self::subdivide(
             left_child_idx,
             nodes,
