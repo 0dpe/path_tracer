@@ -1,9 +1,12 @@
 // these structs match with Rust side definitions
 
 struct GpuTriangleGeometry {
-    p0: vec4<f32>, // p0.w contains material index as a float
-    p1: vec4<f32>,
-    p2: vec4<f32>,
+    coords: array<f32, 9>, // 3 vertices with x, y, z for each vertex; 
+    // stored as a flat array since vec3<T> has alignment of 16 bytes, which misaligns with Rust's glam::Vec3 which has alignment of 12 bytes
+    // using a flat array allows packing the vertex data without padding
+    // the extra code like
+    // p0 = vec3<f32>(tri.coords[0], tri.coords[1], tri.coords[2])
+    // should be optimized by the compiler and not cause a performance difference
 };
 
 struct BvhNode {
@@ -14,14 +17,27 @@ struct BvhNode {
 }
 
 struct GpuTriangleAttribute {
-    n0: vec4<f32>,
-    n1: vec4<f32>,
-    n2: vec4<f32>,
+    index: u32,
+    normals: array<f32, 9>, // same packing logic as GpuTriangleGeometry for the normals of the 3 vertices
+    uv0: vec2<f32>,
+    uv1: vec2<f32>,
+    uv2: vec2<f32>,
 };
 
 struct GpuMaterial {
     base_color: vec4<f32>,
     emissive: vec4<f32>, // r, g, b, strength
+    base_color_tex_layer: i32,
+    metallic_roughness_tex_layer: i32,
+    normal_tex_layer: i32,
+    pad0: i32,
+    base_color_uv: vec4<f32>, // offset_x, offset_y, scale_x, scale_y
+    metallic_roughness_uv: vec4<f32>,
+    normal_uv: vec4<f32>,
+    metallic_factor: f32,
+    roughness_factor: f32,
+    normal_scale: f32,
+    pad1: i32,
 };
 
 struct GpuCamera {
@@ -36,22 +52,20 @@ struct GpuCamera {
 @group(1) @binding(1) var<storage, read> bvh_nodes: array<BvhNode>;
 @group(1) @binding(2) var<storage, read> triangles_attr: array<GpuTriangleAttribute>;
 @group(1) @binding(3) var<storage, read> materials: array<GpuMaterial>;
-@group(1) @binding(4) var<uniform> camera: GpuCamera;
+@group(1) @binding(4) var texture_atlas: texture_2d_array<f32>;
+@group(1) @binding(5) var atlas_sampler: sampler;
+@group(1) @binding(6) var<uniform> camera: GpuCamera;
 
 struct Ray {
     origin: vec3<f32>, // camera origin position in world space
-    // normalized, direction going from camera origin to a point on the image plane
-    direction: vec3<f32>,
-    // matching y = m * x + b, point_along_this_ray = direction * t + origin
-    inv_dir: vec3<f32>, // 1.0/direction; precomputed for fast AABB intersections
+    direction: vec3<f32>, // normalized, direction going from camera origin to a point on the image plane
 };
 
 struct HitRecord {
     t: f32, // distance along the ray where a triangle is hit
     p: vec3<f32>, // world space point where the ray intersects a triangle
-    normal: vec3<f32>, // normalized, vector for the normal
     material_index: u32,
-    front_face: bool, // whether the triangle is front facing or not
+    uv: vec2<f32>,   // interpolated triangle UV
 };
 
 // creates a Ray with origin at camera and direction to a given image plane point
@@ -64,16 +78,15 @@ fn generate_camera_ray(uv: vec2<f32>) -> Ray {
     ray.direction = normalize(
         camera.lower_left_corner.xyz + uv.x * camera.horizontal.xyz + uv.y * camera.vertical.xyz - ray.origin
     );
-
-    // https://www.w3.org/TR/WGSL/#differences-from-ieee754 division by zero naturally results in infinity, which works with AABB math
-    ray.inv_dir = 1.0 / ray.direction;
     return ray;
 }
 
 // ray-AABB intersection (slab method)
 fn hit_aabb(ray: Ray, aabb_min: vec3<f32>, aabb_max: vec3<f32>, t_max: f32) -> bool {
-    let t0 = (aabb_min - ray.origin) * ray.inv_dir;
-    let t1 = (aabb_max - ray.origin) * ray.inv_dir;
+    let inv_dir = 1.0 / ray.direction; // https://www.w3.org/TR/WGSL/#differences-from-ieee754 division by zero naturally results in infinity, which works with AABB math
+
+    let t0 = (aabb_min - ray.origin) * inv_dir;
+    let t1 = (aabb_max - ray.origin) * inv_dir;
 
     let tmin = min(t0, t1);
     let tmax = max(t0, t1);
@@ -114,14 +127,17 @@ fn trace(ray: Ray) -> HitRecord {
                 let tri_idx = node.left_first + i;
 
                 // Möller–Trumbore algorithm: implementation based on https://w.wiki/y6d
-                let p0 = triangles_geo[tri_idx].p0.xyz;
-                let edge1 = triangles_geo[tri_idx].p1.xyz - p0; // two edges spanning the triangle
-                let edge2 = triangles_geo[tri_idx].p2.xyz - p0;
+                let tri = triangles_geo[tri_idx];
+                let p0 = vec3<f32>(tri.coords[0], tri.coords[1], tri.coords[2]);
+                let p1 = vec3<f32>(tri.coords[3], tri.coords[4], tri.coords[5]);
+                let p2 = vec3<f32>(tri.coords[6], tri.coords[7], tri.coords[8]);
+                let edge1 = p1 - p0; // two edges spanning the triangle
+                let edge2 = p2 - p0;
 
                 let ray_cross_edge2 = cross(ray.direction, edge2); // ray_cross_edge2 is perpendicular to ray.direction and edge2
                 let det = dot(edge1, ray_cross_edge2); // det measures how non-parallel the ray is to the plane the triangle is on 
 
-                if abs(det) < 0.000001 {
+                if det < 0.000001 {
                     continue; // ray is parallel to the triangle plane, so an intersection is impossible
                 }
 
@@ -155,27 +171,17 @@ fn trace(ray: Ray) -> HitRecord {
     hit_rec.t = -1.0;
 
     if hit_idx != -1 {
-        let geo = triangles_geo[u32(hit_idx)];
         let attr = triangles_attr[u32(hit_idx)];
 
         hit_rec.t = closest_t;
         hit_rec.p = ray.direction * closest_t + ray.origin; // this matches f(x) = m * x + b, but in this case in 3D, f(x) outputs a vec3 point, which is the intersection point
-        hit_rec.material_index = u32(geo.p0.w); // extract material index from p0.w
+        hit_rec.material_index = attr.index;
 
-        // interpolate normal using barycentric coordinates and normals
         // only 2 barycentric coordinates are given, but we know that the point is valid inside the triangle so all coordinates must sum to 1
         // so, the third barycentric coordinate can just be computed
         let w = 1.0 - hit_u - hit_v;
-        let interpolated_normal = normalize(w * attr.n0.xyz + hit_u * attr.n1.xyz + hit_v * attr.n2.xyz);
 
-        // determine face orientation
-        if dot(ray.direction, interpolated_normal) < 0.0 {
-            hit_rec.front_face = true;
-            hit_rec.normal = interpolated_normal;
-        } else {
-            hit_rec.front_face = false;
-            hit_rec.normal = -interpolated_normal;
-        }
+        hit_rec.uv = w * attr.uv0 + hit_u * attr.uv1 + hit_v * attr.uv2;
     }
 
     return hit_rec;
@@ -204,7 +210,28 @@ fn compute_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // if there's no intersection between the ray and a triangle, then t = -1.0
     if hit.t > 0.0 {
         let mat = materials[hit.material_index];
-        final_color = mat.base_color.rgb + mat.emissive.rgb * mat.emissive.w;
+
+        var base_color_or_multiplier = mat.base_color.rgb;
+
+        if mat.base_color_tex_layer >= 0 {
+            // material UV transform: offset_xy + uv * scale_xy
+            let atlas_uv = mat.base_color_uv.xy + hit.uv * mat.base_color_uv.zw;
+
+            let base_color_tex = textureSampleLevel(
+                texture_atlas,
+                atlas_sampler,
+                atlas_uv,
+                i32(mat.base_color_tex_layer),
+                0.0
+            );
+
+            // the base color texture is already in linear space since it's converted in Rust
+            // per glTF spec: if both base_color and texture are present, base_color acts as a multiplier with the texture
+            base_color_or_multiplier = base_color_tex.rgb * mat.base_color.rgb;
+        }
+
+        // if texture is absent, just use base color which is already in linear space
+        final_color = base_color_or_multiplier + mat.emissive.rgb * mat.emissive.w;
     }
 
     textureStore(screen, global_id.xy, vec4<f32>(final_color, 1.0));
@@ -228,11 +255,12 @@ fn fs_main(@builtin(position) frag_position: vec4<f32>) -> @location(0) vec4<f32
     let uv = frag_position.xy / vec2<f32>(textureDimensions(output_texture));
     let color = textureSample(output_texture, tex_sampler, uv);
 
-    // sRGB gamma conversion
+    // linear to sRGB gamma conversion
     let srgb_color = select(
         color.rgb * 12.92,
         pow(color.rgb, vec3<f32>(1.0 / 2.4)) * 1.055 - 0.055,
         color.rgb > vec3<f32>(0.0031308)
     );
+
     return vec4<f32>(srgb_color, color.a);
 }

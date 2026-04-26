@@ -1,4 +1,4 @@
-use super::scene::Scene;
+use super::scene;
 
 pub struct State {
     surface: wgpu::Surface<'static>, // window for rendering onto
@@ -21,7 +21,7 @@ pub struct State {
     compute_pipeline: wgpu::ComputePipeline, // compute pipeline, for all calculations
     render_pipeline: wgpu::RenderPipeline,   // render pipeline, just for full screen triangle
 
-    scene: Scene, // contains camera, triangles, materials, methods to move the camera, etc.
+    scene: scene::Scene, // contains camera, triangles, materials, methods to move the camera, etc.
 
     camera_dirty: bool, // to prevent duplicate GPU writes since multiple things can request camera movement
 
@@ -55,14 +55,22 @@ fn create_texture_bind_groups(
                 height: texture_size.1,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
-            sample_count: 1,
+            mip_level_count: 1, // the different "sizes" of the image for rendering at different distances; not necessary here since the texture is full screen and doesn't need to be rendered at different sizes
+            sample_count: 1,    // multisampling for anti-aliasing (MSAA); not necessary here
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba16Float, // linear gamma
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[], // linear gamma
+            view_formats: &[wgpu::TextureFormat::Rgba16Float],
         })
-        .create_view(&wgpu::TextureViewDescriptor::default()); // linear gamma
+        .create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Storage texture view"),
+            format: Some(wgpu::TextureFormat::Rgba16Float),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            ..Default::default()
+        });
 
     (
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -119,27 +127,32 @@ impl State {
         log::info!("Using adapter: {}", adapter.get_info().name); // doesn't log the name on web for some reason, but logs fine on native
         let supported_limits = adapter.limits(); // get the maximum limits the physical hardware supports
         log::info!(
-            "Largest possible storage buffer binding size: {} MiB",
+            "Max storage buffer binding size: {} MiB",
             supported_limits.max_storage_buffer_binding_size as f32 / 1024.0 / 1024.0
         );
-        let required_limits = wgpu::Limits {
-            max_storage_buffer_binding_size: supported_limits.max_storage_buffer_binding_size, // the default is 128 MiB, which is too small for millions of triangles
-            max_buffer_size: supported_limits.max_buffer_size,
-            ..wgpu::Limits::default()
-        };
+        // log::info!(
+        //     "Max texture dimension 2D: {}",
+        //     supported_limits.max_texture_dimension_2d
+        // );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Device"),
                 required_features: wgpu::Features::empty(),
-                required_limits,
+                required_limits: wgpu::Limits {
+                    max_storage_buffer_binding_size: supported_limits
+                        .max_storage_buffer_binding_size, // the default is 128 MiB, which is too small for millions of triangles
+                    max_buffer_size: supported_limits.max_buffer_size,
+                    ..wgpu::Limits::default()
+                },
                 experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })
             .await?;
 
-        // see which TextureFormat's are supported
+        // see which TextureFormat's are supported by the surface
         // Bgra8Unorm and Bgra8UnormSrgb should be guaranteed, but on web, Bgra8UnormSrgb isn't supported it seems
+        // for example, on Windows native, [Bgra8UnormSrgb, Rgba8UnormSrgb, Bgra8Unorm, Rgba8Unorm, Rgba16Float, Rgb10a2Unorm] are supported, but with Chrome or Firefox, only [Bgra8Unorm, Rgba8Unorm, Rgba16Float] are supported
         log::info!(
             "Surface formats: {:?}",
             surface.get_capabilities(&adapter).formats
@@ -156,7 +169,7 @@ impl State {
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![], // linear gamma
+            view_formats: vec![wgpu::TextureFormat::Bgra8Unorm], // linear gamma
         };
 
         // render() only works when the surface is configured
@@ -168,8 +181,8 @@ impl State {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
@@ -265,12 +278,32 @@ impl State {
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
-                        binding: 4, // camera
+                        binding: 4, // texture atlas array
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5, // atlas sampler
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6, // camera
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: None,
+                            min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                                scene::GpuCamera,
+                            >(
+                            )
+                                as u64), // not necessary, but is an optimizaton; allows wgpu to skip per-draw validation
                         },
                         count: None,
                     },
@@ -346,8 +379,52 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let mut scene = Scene::new("assets/dragon.glb").await?;
-        scene.debug_randomize_material_albedo();
+        let scene = scene::Scene::new("assets/minecraftBrown.glb").await?;
+
+        const ATLAS_SIZE: u32 = scene::ATLAS_SIZE as u32;
+
+        // create texture array from atlases
+        let texture_atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Texture atlas array"),
+            size: wgpu::Extent3d {
+                width: ATLAS_SIZE,
+                height: ATLAS_SIZE,
+                depth_or_array_layers: scene.texture_atlases.len() as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // upload each atlas layer
+        for (layer_idx, atlas_data) in scene.texture_atlases.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture_atlas,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer_idx as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                atlas_data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ATLAS_SIZE * 4),
+                    rows_per_image: Some(ATLAS_SIZE),
+                },
+                wgpu::Extent3d {
+                    width: ATLAS_SIZE,
+                    height: ATLAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         let gpu_camera = scene.prepare_gpu_camera();
 
@@ -399,6 +476,22 @@ impl State {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&texture_atlas.create_view(
+                        &wgpu::TextureViewDescriptor {
+                            label: Some("Texture atlas view"),
+                            format: Some(wgpu::TextureFormat::Rgba8Unorm),
+                            dimension: Some(wgpu::TextureViewDimension::D2Array),
+                            aspect: wgpu::TextureAspect::All,
+                            ..Default::default()
+                        },
+                    )),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&sampler), // the same sampler can be used for both compute and render bind groups since they have the same filtering requirements
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
                     resource: camera_buffer.as_entire_binding(),
                 },
             ],
@@ -495,10 +588,7 @@ impl State {
             self.fps_counter = 0;
         }
 
-        if self
-            .scene
-            .move_camera(&self.pressed_keys, 6.0 * dt, 6.0 * dt)
-        {
+        if self.scene.move_camera(&self.pressed_keys, dt, dt) {
             self.camera_dirty = true;
         }
 
@@ -513,10 +603,6 @@ impl State {
 
         match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => {
-                let view = frame
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default()); // linear gamma
-
                 // encoder can record RenderPasses, ComputePasses, and transfer operations between driver-managed resources like Buffers and Textures
                 // when finished recording, CommandEncoder::finish is called to obtain a CommandBuffer which is submitted for execution
                 let mut encoder =
@@ -548,7 +634,15 @@ impl State {
                     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Render pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
+                            view: &frame.texture.create_view(&wgpu::TextureViewDescriptor {
+                                label: Some("Current frame surface texture view"),
+                                format: Some(self.surface_config.format), // linear gamma
+                                dimension: Some(wgpu::TextureViewDimension::D2),
+                                aspect: wgpu::TextureAspect::All,
+                                base_mip_level: 0,
+                                mip_level_count: Some(1),
+                                ..Default::default()
+                            }),
                             depth_slice: None, // only useful for 3D textures
                             resolve_target: None,
                             ops: wgpu::Operations {

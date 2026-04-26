@@ -3,12 +3,18 @@
 // on both native and wasm, loading is at runtime
 // this allows the glTF file to change without having to rebuild the WASM
 
+pub const ATLAS_SIZE: i32 = 8192; // 8192 is the default of wgpu::limits::max_texture_dimension_2d 
+// TODO: set atlas size dynamically; if one atlas is enough, use a smaller atlas size; if multiple are needed, use 8192
+// TODO: fix transparency in textures
+// TODO: add parsing of emissive textures
+
 #[derive(Debug)]
 pub struct Scene {
     pub geometries: Vec<GpuTriangleGeometry>,
     pub attributes: Vec<GpuTriangleAttribute>,
     pub materials: Vec<GpuMaterial>,
     pub bvh_nodes: Vec<GpuBvhNode>,
+    pub texture_atlases: Vec<Vec<u8>>,
     camera: Camera,
 }
 
@@ -21,43 +27,58 @@ struct Camera {
     aspect_ratio: f32, // width/height of image plane
     yaw: f32,
     pitch: f32,
+    movement_speeds: [f32; 2], // units per second
 }
 
 // GpuTriangleGeometry and GpuTriangleAttribute are separate structs the shader fetches vertices much more frequently than normals
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)] // Clone and Copy are required by Pod
 pub struct GpuTriangleGeometry {
-    // bytemuck::Pod requires alignment without padding
-    // shader also requires padding https://www.w3.org/TR/WGSL/#alignment-and-size
+    // bytemuck::Pod requires alignment without implicit padding
     // although glam::Vec3A is 16 byte aligned, it has padding
-    // except for p0, for every other point and normal only 3 values are useful; the last value is 0.0
-    // for p0 only, the last value is meaningful, which points to the index of a GpuMaterial
-    // meshes are not passed to the GPU; instead, individual triangles themselves are passed
-    // each triangle thus has a material index, which indicates which mesh the triangle is from
-    p0: glam::Vec4,
-    p1: glam::Vec4,
-    p2: glam::Vec4,
+    // WebGPU requirements: https://www.w3.org/TR/WGSL/#alignment-and-size
+    p0: glam::Vec3,
+    p1: glam::Vec3,
+    p2: glam::Vec3,
 }
 
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTriangleAttribute {
-    n0: glam::Vec4,
-    n1: glam::Vec4,
-    n2: glam::Vec4,
+    // points to the index of a GpuMaterial
+    // meshes are not passed to the GPU; instead, individual triangles themselves are passed
+    // each triangle thus has a material index, which indicates which mesh the triangle is from
+    index: u32,
+    n0: glam::Vec3,
+    n1: glam::Vec3,
+    n2: glam::Vec3,
+    uv0: glam::Vec2,
+    uv1: glam::Vec2,
+    uv2: glam::Vec2,
 }
 
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuMaterial {
     base_color: glam::Vec4,
     emissive: glam::Vec4, // emissive color in rgb, then strength in the 4th value
+    base_color_tex_layer: i32, // index the array of texture atlases for this texture; -1 if no texture
+    metallic_roughness_tex_layer: i32,
+    normal_tex_layer: i32,
+    pad0: i32,
+    base_color_uv: glam::Vec4, // uvs have offset_x, offset_y, scale_x, scale_y
+    metallic_roughness_uv: glam::Vec4,
+    normal_uv: glam::Vec4,
+    metallic_factor: f32,
+    roughness_factor: f32,
+    normal_scale: f32,
+    pad1: i32,
 }
 
 // if prim_count == 0, the node is an internal node, and left_first is the index of the left child node in the Vec<GpuBvhNode>
 // the right child is guaranteed to be immediately after left_first at left_first + 1
 // if prim_count > 0, the node is a leaf, and left_first is instead the starting offset into Vec<GpuTriangleGeometry>, where the primitives contained in this leaf node are at indices left_first to left_first + prim_count - 1
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuBvhNode {
     aabb_min: glam::Vec3,
@@ -66,8 +87,16 @@ pub struct GpuBvhNode {
     prim_count: u32,
 }
 
-#[repr(C, align(16))]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+/* although the 4th value of each Vec4 is unused, if having Vec3 with matching WGSL:
+struct GpuCamera {
+    data: array<f32, 12>,
+};
+does not work for UNIFORM buffers
+Error: Global variable [5] 'camera' is invalid: Alignment requirements for address space Uniform are not met by [10]The array stride 4 is not a multiple of the required alignment 16naga(15)
+Even putting #[repr(C, align(16))] on this struct does not work
+*/
 pub struct GpuCamera {
     position: glam::Vec4,          // camera position, same as in Camera
     lower_left_corner: glam::Vec4, // lower-left pixel coordinate of image plane in world space
@@ -106,6 +135,97 @@ impl Aabb {
 struct PrimitiveInfo {
     aabb: Aabb,
     centroid: glam::Vec3,
+}
+
+// helper to convert image into RGBA8
+// most textures from most models are 8 bit; higher bit depth textures are uncommon
+// is_srgb for converting base color textures from sRGB to linear; only base color textures are sRGB in glTF, which needs conversion
+// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#metallic-roughness-material
+fn convert_to_rgba8(image: &gltf::image::Data, is_srgb: bool, srgb_lut: &[u8; 256]) -> Vec<u8> {
+    use gltf::image::Format;
+    log::info!("Converting image with format {:?} to RGBA8", image.format);
+    let mut rgba = match image.format {
+        Format::R8 => image.pixels.iter().flat_map(|&r| [r, r, r, 255]).collect(),
+        Format::R8G8 => image
+            .pixels
+            .chunks_exact(2)
+            .flat_map(|rg| [rg[0], rg[1], 0, 255])
+            .collect(),
+        Format::R8G8B8 => image
+            .pixels
+            .chunks_exact(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+            .collect(),
+        Format::R8G8B8A8 => image.pixels.clone(),
+
+        Format::R16 => image
+            .pixels
+            .chunks_exact(2)
+            .flat_map(|r| {
+                let v = (u16::from_le_bytes([r[0], r[1]]) >> 8) as u8;
+                [v, v, v, 255]
+            })
+            .collect(),
+        Format::R16G16 => image
+            .pixels
+            .chunks_exact(4)
+            .flat_map(|rg| {
+                let r = (u16::from_le_bytes([rg[0], rg[1]]) >> 8) as u8;
+                let g = (u16::from_le_bytes([rg[2], rg[3]]) >> 8) as u8;
+                [r, r, r, g]
+            })
+            .collect(),
+        Format::R16G16B16 => image
+            .pixels
+            .chunks_exact(6)
+            .flat_map(|rgb| {
+                let r = (u16::from_le_bytes([rgb[0], rgb[1]]) >> 8) as u8;
+                let g = (u16::from_le_bytes([rgb[2], rgb[3]]) >> 8) as u8;
+                let b = (u16::from_le_bytes([rgb[4], rgb[5]]) >> 8) as u8;
+                [r, g, b, 255]
+            })
+            .collect(),
+        Format::R16G16B16A16 => image
+            .pixels
+            .chunks_exact(8)
+            .flat_map(|rgba| {
+                let r = (u16::from_le_bytes([rgba[0], rgba[1]]) >> 8) as u8;
+                let g = (u16::from_le_bytes([rgba[2], rgba[3]]) >> 8) as u8;
+                let b = (u16::from_le_bytes([rgba[4], rgba[5]]) >> 8) as u8;
+                let a = (u16::from_le_bytes([rgba[6], rgba[7]]) >> 8) as u8;
+                [r, g, b, a]
+            })
+            .collect(),
+        _ => {
+            log::warn!(
+                "Unsupported image format {:?}, using fallback opaque white texture",
+                image.format
+            );
+            vec![255; (image.width * image.height * 4) as usize]
+        }
+    };
+
+    // sRGB -> linear conversion mapping
+    if is_srgb {
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[0] = srgb_lut[pixel[0] as usize];
+            pixel[1] = srgb_lut[pixel[1] as usize];
+            pixel[2] = srgb_lut[pixel[2] as usize];
+            // the alpha channel is strictly linear per the glTF spec, so don't modify pixel[3]
+        }
+    }
+
+    rgba
+}
+
+// helper to fetch mapping bounds from dictionary
+fn get_layer_and_uv(
+    img_idx_opt: Option<usize>,
+    image_uvs: &std::collections::HashMap<usize, (i32, glam::Vec4)>,
+) -> (i32, glam::Vec4) {
+    img_idx_opt
+        .and_then(|idx| image_uvs.get(&idx).copied())
+        .unwrap_or((-1, glam::Vec4::ZERO)) // return -1 layer if no texture attached
 }
 
 // private helper function used in new()
@@ -151,7 +271,7 @@ async fn load_gltf_bytes(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Erro
 
 impl Scene {
     pub async fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let (document, buffers, _images) = gltf::import_slice(load_gltf_bytes(path).await?)?;
+        let (document, buffers, images) = gltf::import_slice(load_gltf_bytes(path).await?)?;
 
         let mut geometries = Vec::new();
         let mut attributes = Vec::new();
@@ -161,8 +281,99 @@ impl Scene {
         // the 2 extensions enabled are KHR_materials_emissive_strength and KHR_materials_specular
         // in Blender, with principled BSDF, if emission strength is larger than 1.0, KHR_materials_emissive_strength will automatically be used in the exported glTF file
         document.extensions_used().for_each(|s| {
-            log::info!("glTF used extension: {s}");
+            log::info!("glTF includes extension: {s}");
         });
+
+        // precompute an 8-bit sRGB to linear lookup table to avoid expensive math per-pixel
+        let mut srgb_to_linear_lut = [0u8; 256];
+        for (i, c) in srgb_to_linear_lut.iter_mut().enumerate() {
+            let f = i as f32 / 255.0;
+            let linear = if f <= 0.04045 {
+                f / 12.92
+            } else {
+                ((f + 0.055) / 1.055).powf(2.4)
+            };
+            *c = (linear * 255.0).round() as u8;
+        }
+
+        // collect indices of images designated as sRGB (base color or emissive textures) per glTF spec
+        let mut srgb_images = std::collections::HashSet::new();
+        for material in document.materials() {
+            if let Some(tex) = material.pbr_metallic_roughness().base_color_texture() {
+                srgb_images.insert(tex.texture().source().index());
+            }
+            if let Some(tex) = material.emissive_texture() {
+                srgb_images.insert(tex.texture().source().index());
+            }
+        }
+
+        struct AtlasLayer {
+            allocator: guillotiere::AtlasAllocator,
+            pixels: Vec<u8>,
+        }
+        let mut atlases = vec![AtlasLayer {
+            allocator: guillotiere::AtlasAllocator::new(guillotiere::size2(ATLAS_SIZE, ATLAS_SIZE)),
+            pixels: vec![0; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize], // * 4 for RGBA
+        }];
+
+        let mut image_uvs = std::collections::HashMap::new();
+
+        // loop through each image
+        // if there are no images, this loop is skipped, and atlases just contains one empty ATLAS_SIZE RGBA texture, which is fine since the shader will check if the layer index is -1 and skip texturing in that case
+        for (img_idx, image) in images.iter().enumerate() {
+            let rgba = convert_to_rgba8(image, srgb_images.contains(&img_idx), &srgb_to_linear_lut);
+            let size = guillotiere::size2(image.width.cast_signed(), image.height.cast_signed());
+            let mut allocation = None;
+            let mut layer_idx = 0;
+
+            // try to find a layer that has enough space
+            for (i, layer) in atlases.iter_mut().enumerate() {
+                if let Some(alloc) = layer.allocator.allocate(size) {
+                    allocation = Some(alloc);
+                    layer_idx = i;
+                    break;
+                }
+            }
+
+            // if all atlases are full, create a new atlas
+            if allocation.is_none() {
+                let mut new_layer = AtlasLayer {
+                    allocator: guillotiere::AtlasAllocator::new(guillotiere::size2(
+                        ATLAS_SIZE, ATLAS_SIZE,
+                    )),
+                    pixels: vec![0; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize],
+                };
+                allocation = new_layer.allocator.allocate(size);
+                layer_idx = atlases.len();
+                atlases.push(new_layer);
+            }
+
+            let alloc = allocation.expect("Single image is larger than ATLAS_SIZE atlas.");
+            let rect = alloc.rectangle;
+
+            // blit the image into the atlas buffer
+            let layer = &mut atlases[layer_idx];
+            for y in 0..image.height.cast_signed() {
+                let src_start = (y * image.width.cast_signed() * 4) as usize;
+                let src_end = src_start + (image.width.cast_signed() * 4) as usize;
+
+                let dst_start = ((rect.min.y + y) * ATLAS_SIZE * 4 + rect.min.x * 4) as usize;
+                let dst_end = dst_start + (image.width.cast_signed() * 4) as usize;
+
+                layer.pixels[dst_start..dst_end].copy_from_slice(&rgba[src_start..src_end]);
+            }
+
+            // calculate scale and offset in the 0.0 -> 1.0 range based on the atlas
+            let uv_offset_scale = glam::Vec4::new(
+                rect.min.x as f32 / ATLAS_SIZE as f32,   // offset x
+                rect.min.y as f32 / ATLAS_SIZE as f32,   // offset y
+                image.width as f32 / ATLAS_SIZE as f32,  // scale x
+                image.height as f32 / ATLAS_SIZE as f32, // scale y
+            );
+
+            #[allow(clippy::cast_possible_wrap)]
+            image_uvs.insert(img_idx, (layer_idx as i32, uv_offset_scale));
+        }
 
         // collect meshes referenced by nodes
         for node in document.default_scene().map_or_else(
@@ -209,25 +420,63 @@ impl Scene {
                             None => continue, // if there are no normals, skip this primitive
                         };
 
+                        let tex_coords: Vec<glam::Vec2> = reader.read_tex_coords(0).map_or_else(
+                            || vec![glam::Vec2::ZERO; positions.len()],
+                            |read_tex_coords| {
+                                read_tex_coords
+                                    .into_f32()
+                                    .map(glam::Vec2::from_array)
+                                    .collect()
+                            },
+                        ); // if there are no tex coords, use (0, 0) for all vertices
+
                         let indices: Vec<u32> = reader.read_indices().map_or_else(
                             || (0u32..positions.len() as u32).collect(),
                             |read_indices| read_indices.into_u32().collect(),
                         );
 
-                        let material_index = materials.len() as f32;
+                        let material_index = materials.len() as u32;
+
+                        let mat = primitive.material();
+                        let pbr = mat.pbr_metallic_roughness();
+
+                        let (bc_layer, bc_uv) = get_layer_and_uv(
+                            pbr.base_color_texture()
+                                .map(|t| t.texture().source().index()), // this index should match the image's index from images.iter().enumerate(), which is a key in image_uvs
+                            &image_uvs,
+                        );
+
+                        let (mr_layer, mr_uv) = get_layer_and_uv(
+                            pbr.metallic_roughness_texture()
+                                .map(|t| t.texture().source().index()),
+                            &image_uvs,
+                        );
+
+                        let norm_tex = mat.normal_texture();
+                        let (norm_layer, norm_uv) = get_layer_and_uv(
+                            norm_tex.as_ref().map(|t| t.texture().source().index()),
+                            &image_uvs,
+                        );
+
                         materials.push(GpuMaterial {
-                            base_color: glam::Vec4::from(
-                                primitive
-                                    .material() // for more material properties, this is where to get them
-                                    .pbr_metallic_roughness() // for metallic and roughness properties, and the texture, this is where to get them
-                                    .base_color_factor(),
-                            ),
+                            base_color: glam::Vec4::from(pbr.base_color_factor()),
                             emissive: glam::Vec4::new(
-                                primitive.material().emissive_factor()[0],
-                                primitive.material().emissive_factor()[1],
-                                primitive.material().emissive_factor()[2],
-                                primitive.material().emissive_strength().unwrap_or_default(),
+                                mat.emissive_factor()[0],
+                                mat.emissive_factor()[1],
+                                mat.emissive_factor()[2],
+                                mat.emissive_strength().unwrap_or_default(),
                             ),
+                            base_color_tex_layer: bc_layer,
+                            metallic_roughness_tex_layer: mr_layer,
+                            normal_tex_layer: norm_layer,
+                            pad0: 0,
+                            base_color_uv: bc_uv,
+                            metallic_roughness_uv: mr_uv,
+                            normal_uv: norm_uv,
+                            metallic_factor: pbr.metallic_factor(),
+                            roughness_factor: pbr.roughness_factor(),
+                            normal_scale: norm_tex.map_or(1.0, |t| t.scale()),
+                            pad1: 0,
                         });
 
                         for chunk in indices.chunks_exact(3) {
@@ -239,10 +488,6 @@ impl Scene {
                             let p1 = model_mat.transform_point3(positions[i1]);
                             let p2 = model_mat.transform_point3(positions[i2]);
 
-                            let n0 = normal_mat.transform_vector3(normals[i0]).normalize();
-                            let n1 = normal_mat.transform_vector3(normals[i1]).normalize();
-                            let n2 = normal_mat.transform_vector3(normals[i2]).normalize();
-
                             // calculate AABB and centroid for the BVH builder
                             prim_infos.push(PrimitiveInfo {
                                 aabb: Aabb {
@@ -252,16 +497,16 @@ impl Scene {
                                 centroid: (p0 + p1 + p2) / 3.0,
                             });
 
-                            geometries.push(GpuTriangleGeometry {
-                                p0: glam::Vec4::from((p0, material_index)),
-                                p1: glam::Vec4::from((p1, 0.0)),
-                                p2: glam::Vec4::from((p2, 0.0)),
-                            });
+                            geometries.push(GpuTriangleGeometry { p0, p1, p2 });
 
                             attributes.push(GpuTriangleAttribute {
-                                n0: glam::Vec4::from((n0, 0.0)),
-                                n1: glam::Vec4::from((n1, 0.0)),
-                                n2: glam::Vec4::from((n2, 0.0)),
+                                index: material_index,
+                                n0: normal_mat.transform_vector3(normals[i0]).normalize(),
+                                n1: normal_mat.transform_vector3(normals[i1]).normalize(),
+                                n2: normal_mat.transform_vector3(normals[i2]).normalize(),
+                                uv0: tex_coords[i0],
+                                uv1: tex_coords[i1],
+                                uv2: tex_coords[i2],
                             });
                         }
                     }
@@ -277,9 +522,10 @@ impl Scene {
         }];
 
         log::info!(
-            "Loaded scene with {} triangles, {} materials; starting BVH construction",
+            "Loaded scene with {} triangles, {} materials, {} texture atlases; starting BVH construction",
             geometries.len(),
-            materials.len()
+            materials.len(),
+            atlases.len(),
         );
 
         let bvh_construction_start = web_time::Instant::now();
@@ -304,21 +550,30 @@ impl Scene {
             bvh_construction_start.elapsed()
         );
 
+        // calculate a decent starting camera position from scene bounds
+        let root_aabb = bvh_nodes[0];
+        let scene_center = (root_aabb.aabb_min + root_aabb.aabb_max) * 0.5;
+        let scene_height = root_aabb.aabb_max.y - root_aabb.aabb_min.y;
+
         Ok(Self {
             geometries,
             attributes,
             materials,
             bvh_nodes,
-            // with this camera orientation, Blender exported .glb files will appear in this orientation expressed in Blender's coordinate system:
-            // +Z upward, +X rightward, +Y into the screen
-            // this happens when the checkbox "+Y Up" is checked when exporting a .glb file in Blender
+            texture_atlases: atlases.into_iter().map(|layer| layer.pixels).collect(), // map out just the pixels from the AtlasLayer structs
             camera: Camera {
-                // 0.0, 1.0, 2.5 is good for cornell
-                position: glam::Vec3::new(-3.5, 0.5, 0.7), // TODO auto calculate a better starting position based on the scene's bounding box
+                position: glam::Vec3::new(
+                    scene_center.x,
+                    scene_height.mul_add(0.01, root_aabb.aabb_max.y), // position the camera above the top of the scene bounds
+                    scene_center.z,
+                ),
                 fov_y: 90.0,
                 aspect_ratio: 1.0,
-                yaw: 4.85, // facing -Z, which is into the screen
-                pitch: -0.1,
+                yaw: 0.0,
+                pitch: 0.0,
+                movement_speeds: [(root_aabb.aabb_max.x - root_aabb.aabb_min.x)
+                    .max(root_aabb.aabb_max.z - root_aabb.aabb_min.z)
+                    * 0.15; 2],
             },
         })
     }
@@ -390,7 +645,6 @@ impl Scene {
 
             for info in &prim_infos[start..end] {
                 let centroid = info.centroid[axis];
-                #[allow(clippy::cast_sign_loss)]
                 let mut bin_idx = ((centroid - bounds_min) * scale) as usize;
                 bin_idx = bin_idx.min(BINS - 1);
                 bins[bin_idx].count += 1;
@@ -454,7 +708,6 @@ impl Scene {
 
         while left <= right {
             let centroid = prim_infos[left].centroid[best_axis];
-            #[allow(clippy::cast_sign_loss)]
             let mut bin_idx = ((centroid - bounds_min) * scale) as usize;
             bin_idx = bin_idx.min(BINS - 1);
 
@@ -522,36 +775,6 @@ impl Scene {
         );
     }
 
-    // override every primitive to use a debug material with a deterministic random albedo
-    pub fn debug_randomize_material_albedo(&mut self) {
-        self.materials.clear();
-        self.materials.reserve(self.geometries.len());
-
-        #[allow(clippy::unreadable_literal)]
-        for (primitive_idx, geometry) in self.geometries.iter_mut().enumerate() {
-            let mut seed = primitive_idx as u64;
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            seed ^= seed >> 33;
-            seed = seed.wrapping_mul(0xff51afd7ed558ccd);
-            seed ^= seed >> 33;
-            seed = seed.wrapping_mul(0xc4ceb9fe1a85ec53);
-            seed ^= seed >> 33;
-
-            self.materials.push(GpuMaterial {
-                base_color: glam::Vec4::from((
-                    f32::from((seed & 0xFF) as u8) / 255.0,
-                    f32::from(((seed >> 8) & 0xFF) as u8) / 255.0,
-                    f32::from(((seed >> 16) & 0xFF) as u8) / 255.0,
-                    1.0,
-                )),
-                emissive: glam::Vec4::ZERO,
-            });
-            geometry.p0.w = primitive_idx as f32;
-        }
-    }
-
     pub fn resize_camera_aspect_ratio(&mut self, width: f32, height: f32) {
         self.camera.aspect_ratio = width / height;
     }
@@ -584,14 +807,19 @@ impl Scene {
         let intent = forward_xz * forward_coeff + right_xz * right_coeff;
 
         let move_xz = if intent.length_squared() > f32::EPSILON {
-            intent.normalize() * horizontal_speed
+            intent.normalize() * horizontal_speed * self.camera.movement_speeds[0]
         } else {
             glam::Vec3::ZERO
         };
 
         let vert_dir = (if space { 1.0 } else { 0.0 }) - (if shift { 1.0 } else { 0.0 });
 
-        self.camera.position += move_xz + glam::Vec3::new(0.0, vert_dir * vertical_speed, 0.0);
+        self.camera.position += move_xz
+            + glam::Vec3::new(
+                0.0,
+                vert_dir * vertical_speed * self.camera.movement_speeds[1],
+                0.0,
+            );
 
         true
     }

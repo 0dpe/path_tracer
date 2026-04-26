@@ -14,6 +14,7 @@ clippy --all-targets --all-features --
 -A clippy::items_after_statements
 -A clippy::cast_possible_truncation
 -A clippy::cast_precision_loss
+-A clippy::cast_sign_loss
 """
 rr = "run --release"
 
