@@ -4,6 +4,10 @@ mod utils;
 use render::state::State;
 use utils::expect_universal::ExpectUniversal;
 
+// not supported because testing inlcudes saving images to disk
+#[cfg(all(feature = "testing", target_arch = "wasm32"))]
+compile_error!("feature `testing` is not supported on wasm32");
+
 // if target_arch is wasm32, apply wasm_bindgen(start)
 // this cfg_attr done because wasm_bindgen dependency isn't in scope for non-wasm
 // wasm_bindgen(start) marks the first function that gets executed when this code, converted to wasm, is loaded into the browser

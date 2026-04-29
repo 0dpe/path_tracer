@@ -375,6 +375,21 @@ impl Scene {
             image_uvs.insert(img_idx, (layer_idx as i32, uv_offset_scale));
         }
 
+        #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+        {
+            // save parsed images for testing
+            for (img_idx, image) in images.iter().enumerate() {
+                let rgba =
+                    convert_to_rgba8(image, srgb_images.contains(&img_idx), &srgb_to_linear_lut);
+                Self::save_rgba_image(
+                    &format!("parsed_image_{img_idx}.png"),
+                    &rgba,
+                    image.width,
+                    image.height,
+                );
+            }
+        }
+
         // collect meshes referenced by nodes
         for node in document.default_scene().map_or_else(
             || document.nodes().collect::<Vec<_>>(),
@@ -554,6 +569,19 @@ impl Scene {
         let root_aabb = bvh_nodes[0];
         let scene_center = (root_aabb.aabb_min + root_aabb.aabb_max) * 0.5;
         let scene_height = root_aabb.aabb_max.y - root_aabb.aabb_min.y;
+
+        #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+        {
+            // save atlases for testing
+            for (idx, atlas) in atlases.iter().enumerate() {
+                Self::save_rgba_image(
+                    &format!("atlas_{idx}.png"),
+                    &atlas.pixels,
+                    ATLAS_SIZE as u32,
+                    ATLAS_SIZE as u32,
+                );
+            }
+        }
 
         Ok(Self {
             geometries,
@@ -863,6 +891,41 @@ impl Scene {
             lower_left_corner: glam::Vec4::from((lower_left_corner3, 0.0)),
             horizontal: glam::Vec4::from((horizontal3, 0.0)),
             vertical: glam::Vec4::from((vertical3, 0.0)),
+        }
+    }
+
+    #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+    fn save_rgba_image(filename: &str, pixels: &[u8], width: u32, height: u32) {
+        use std::path::PathBuf;
+
+        // create debug_output directory in the crate root
+        let mut output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        output_path.push("debug_output");
+
+        if let Err(e) = std::fs::create_dir_all(&output_path) {
+            log::error!("Failed to create debug_output directory: {e}");
+            return;
+        }
+
+        output_path.push(filename);
+
+        match image::RgbaImage::from_raw(width, height, pixels.to_vec()) {
+            Some(img) => match img.save(&output_path) {
+                Ok(()) => {
+                    log::info!("Saved debug image to {}", output_path.display());
+                }
+                Err(e) => {
+                    log::error!("Failed to save image {}: {}", output_path.display(), e);
+                }
+            },
+            None => {
+                log::error!(
+                    "Failed to create image from raw pixels: {}x{} with {} bytes",
+                    width,
+                    height,
+                    pixels.len()
+                );
+            }
         }
     }
 }
