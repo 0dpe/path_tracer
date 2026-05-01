@@ -379,7 +379,7 @@ impl State {
         });
 
         // load and parse a glTF 2.0 file
-        let scene = scene::Scene::new("assets/minecraftBrown.glb").await?;
+        let scene = scene::Scene::new("assets/mcv2.glb").await?;
 
         const ATLAS_SIZE: u32 = scene::ATLAS_SIZE as u32;
 

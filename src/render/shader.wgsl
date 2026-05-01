@@ -17,7 +17,7 @@ struct BvhNode {
 }
 
 struct GpuTriangleAttribute {
-    index: u32,
+    index: u32, // index into the GpuMaterial
     normals: array<f32, 9>, // same packing logic as GpuTriangleGeometry for the normals of the 3 vertices
     uv0: vec2<f32>,
     uv1: vec2<f32>,
@@ -25,19 +25,18 @@ struct GpuTriangleAttribute {
 };
 
 struct GpuMaterial {
-    base_color: vec4<f32>,
+    base_color_factor: vec4<f32>,
+    base_color_uv: vec4<f32>, // offset_x, offset_y, scale_x, scale_y
+    normal_uv: vec4<f32>,
+    metallic_roughness_uv: vec4<f32>,
     emissive: vec4<f32>, // r, g, b, strength
     base_color_tex_layer: i32,
-    metallic_roughness_tex_layer: i32,
+    normal_scale: f32,
     normal_tex_layer: i32,
-    pad0: i32,
-    base_color_uv: vec4<f32>, // offset_x, offset_y, scale_x, scale_y
-    metallic_roughness_uv: vec4<f32>,
-    normal_uv: vec4<f32>,
+    metallic_roughness_tex_layer: i32,
     metallic_factor: f32,
     roughness_factor: f32,
-    normal_scale: f32,
-    pad1: i32,
+    pad: vec2<i32>,
 };
 
 struct GpuCamera {
@@ -211,7 +210,7 @@ fn compute_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if hit.t > 0.0 {
         let mat = materials[hit.material_index];
 
-        var base_color_or_multiplier = mat.base_color.rgb;
+        var base_color_or_multiplier = mat.base_color_factor.rgb;
 
         if mat.base_color_tex_layer >= 0 {
             // material UV transform: offset_xy + uv * scale_xy
@@ -227,7 +226,7 @@ fn compute_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
             // the base color texture is already in linear space since it's converted in Rust
             // per glTF spec: if both base_color and texture are present, base_color acts as a multiplier with the texture
-            base_color_or_multiplier = base_color_tex.rgb * mat.base_color.rgb;
+            base_color_or_multiplier = base_color_tex.rgb * mat.base_color_factor.rgb;
         }
 
         // if texture is absent, just use base color which is already in linear space

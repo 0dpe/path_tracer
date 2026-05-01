@@ -33,6 +33,10 @@ struct Camera {
 // GpuTriangleGeometry and GpuTriangleAttribute are separate structs the shader fetches vertices much more frequently than normals
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)] // Clone and Copy are required by Pod
+#[cfg_attr(
+    all(feature = "testing", not(target_arch = "wasm32")),
+    derive(serde::Serialize)
+)]
 pub struct GpuTriangleGeometry {
     // bytemuck::Pod requires alignment without implicit padding
     // although glam::Vec3A is 16 byte aligned, it has padding
@@ -44,6 +48,10 @@ pub struct GpuTriangleGeometry {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[cfg_attr(
+    all(feature = "testing", not(target_arch = "wasm32")),
+    derive(serde::Serialize)
+)]
 pub struct GpuTriangleAttribute {
     // points to the index of a GpuMaterial
     // meshes are not passed to the GPU; instead, individual triangles themselves are passed
@@ -59,20 +67,23 @@ pub struct GpuTriangleAttribute {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[cfg_attr(
+    all(feature = "testing", not(target_arch = "wasm32")),
+    derive(serde::Serialize)
+)]
 pub struct GpuMaterial {
-    base_color: glam::Vec4,
+    base_color_factor: glam::Vec4,
+    base_color_uv: glam::Vec4, // uvs have offset_x, offset_y, scale_x, scale_y
+    normal_uv: glam::Vec4,
+    metallic_roughness_uv: glam::Vec4,
     emissive: glam::Vec4, // emissive color in rgb, then strength in the 4th value
     base_color_tex_layer: i32, // index the array of texture atlases for this texture; -1 if no texture
-    metallic_roughness_tex_layer: i32,
+    normal_scale: f32,
     normal_tex_layer: i32,
-    pad0: i32,
-    base_color_uv: glam::Vec4, // uvs have offset_x, offset_y, scale_x, scale_y
-    metallic_roughness_uv: glam::Vec4,
-    normal_uv: glam::Vec4,
+    metallic_roughness_tex_layer: i32,
     metallic_factor: f32,
     roughness_factor: f32,
-    normal_scale: f32,
-    pad1: i32,
+    pad: [i32; 2],
 }
 
 // if prim_count == 0, the node is an internal node, and left_first is the index of the left child node in the Vec<GpuBvhNode>
@@ -143,7 +154,10 @@ struct PrimitiveInfo {
 // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#metallic-roughness-material
 fn convert_to_rgba8(image: &gltf::image::Data, is_srgb: bool, srgb_lut: &[u8; 256]) -> Vec<u8> {
     use gltf::image::Format;
+
+    #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
     log::info!("Converting image with format {:?} to RGBA8", image.format);
+
     let mut rgba = match image.format {
         Format::R8 => image.pixels.iter().flat_map(|&r| [r, r, r, 255]).collect(),
         Format::R8G8 => image
@@ -455,43 +469,43 @@ impl Scene {
                         let mat = primitive.material();
                         let pbr = mat.pbr_metallic_roughness();
 
-                        let (bc_layer, bc_uv) = get_layer_and_uv(
+                        let (base_color_tex_layer, base_color_uv) = get_layer_and_uv(
                             pbr.base_color_texture()
                                 .map(|t| t.texture().source().index()), // this index should match the image's index from images.iter().enumerate(), which is a key in image_uvs
                             &image_uvs,
                         );
 
-                        let (mr_layer, mr_uv) = get_layer_and_uv(
-                            pbr.metallic_roughness_texture()
-                                .map(|t| t.texture().source().index()),
-                            &image_uvs,
-                        );
+                        let (metallic_roughness_tex_layer, metallic_roughness_uv) =
+                            get_layer_and_uv(
+                                pbr.metallic_roughness_texture()
+                                    .map(|t| t.texture().source().index()),
+                                &image_uvs,
+                            );
 
                         let norm_tex = mat.normal_texture();
-                        let (norm_layer, norm_uv) = get_layer_and_uv(
+                        let (normal_tex_layer, normal_uv) = get_layer_and_uv(
                             norm_tex.as_ref().map(|t| t.texture().source().index()),
                             &image_uvs,
                         );
 
                         materials.push(GpuMaterial {
-                            base_color: glam::Vec4::from(pbr.base_color_factor()),
+                            base_color_factor: glam::Vec4::from(pbr.base_color_factor()),
+                            base_color_uv,
+                            normal_uv,
+                            metallic_roughness_uv,
                             emissive: glam::Vec4::new(
                                 mat.emissive_factor()[0],
                                 mat.emissive_factor()[1],
                                 mat.emissive_factor()[2],
                                 mat.emissive_strength().unwrap_or_default(),
                             ),
-                            base_color_tex_layer: bc_layer,
-                            metallic_roughness_tex_layer: mr_layer,
-                            normal_tex_layer: norm_layer,
-                            pad0: 0,
-                            base_color_uv: bc_uv,
-                            metallic_roughness_uv: mr_uv,
-                            normal_uv: norm_uv,
+                            base_color_tex_layer,
+                            normal_scale: norm_tex.map_or(1.0, |t| t.scale()),
+                            normal_tex_layer,
+                            metallic_roughness_tex_layer,
                             metallic_factor: pbr.metallic_factor(),
                             roughness_factor: pbr.roughness_factor(),
-                            normal_scale: norm_tex.map_or(1.0, |t| t.scale()),
-                            pad1: 0,
+                            pad: [0; 2],
                         });
 
                         for chunk in indices.chunks_exact(3) {
@@ -583,7 +597,7 @@ impl Scene {
             }
         }
 
-        Ok(Self {
+        let scene = Self {
             geometries,
             attributes,
             materials,
@@ -603,7 +617,12 @@ impl Scene {
                     .max(root_aabb.aabb_max.z - root_aabb.aabb_min.z)
                     * 0.15; 2],
             },
-        })
+        };
+
+        #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+        scene.save_scene_data_json();
+
+        Ok(scene)
     }
 
     // updates bounding box for a given node based on triangles it spans
@@ -895,11 +914,55 @@ impl Scene {
     }
 
     #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
-    fn save_rgba_image(filename: &str, pixels: &[u8], width: u32, height: u32) {
-        use std::path::PathBuf;
+    fn save_scene_data_json(&self) {
+        #[derive(serde::Serialize)]
+        struct SceneData {
+            geometries: Vec<GpuTriangleGeometry>,
+            attributes: Vec<GpuTriangleAttribute>,
+            materials: Vec<GpuMaterial>,
+        }
 
+        let scene_data = SceneData {
+            geometries: self.geometries.clone(),
+            attributes: self.attributes.clone(),
+            materials: self.materials.clone(),
+        };
+
+        let mut output_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        output_path.push("debug_output");
+
+        if let Err(e) = std::fs::create_dir_all(&output_path) {
+            log::error!("Failed to create debug_output directory: {e}");
+            return;
+        }
+
+        output_path.push("scene_data.json");
+
+        match serde_json::to_string_pretty(&scene_data) {
+            Ok(json) => match std::fs::write(&output_path, json) {
+                Ok(()) => {
+                    log::info!(
+                        "Saved scene data JSON to {} (geometries: {}, attributes: {}, materials: {})",
+                        output_path.display(),
+                        self.geometries.len(),
+                        self.attributes.len(),
+                        self.materials.len()
+                    );
+                }
+                Err(e) => {
+                    log::error!("Failed to write scene data JSON: {e}");
+                }
+            },
+            Err(e) => {
+                log::error!("Failed to serialize scene data to JSON: {e}");
+            }
+        }
+    }
+
+    #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
+    fn save_rgba_image(filename: &str, pixels: &[u8], width: u32, height: u32) {
         // create debug_output directory in the crate root
-        let mut output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut output_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         output_path.push("debug_output");
 
         if let Err(e) = std::fs::create_dir_all(&output_path) {
