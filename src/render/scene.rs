@@ -3,9 +3,10 @@
 // on both native and wasm, loading is at runtime
 // this allows the glTF file to change without having to rebuild the WASM
 
-pub const ATLAS_SIZE: i32 = 8192; // 8192 is the default of wgpu::limits::max_texture_dimension_2d 
+pub const ATLAS_SIZE: i32 = 1024; // 8192 is the default of wgpu::limits::max_texture_dimension_2d 
 // TODO: set atlas size dynamically; if one atlas is enough, use a smaller atlas size; if multiple are needed, use 8192
-// TODO: fix transparency in textures
+// TODO: fix transparency in textures; parsing is done correctly, but shader is not correct. also, in gltf::material, parse alpha_mode and alpha_cutoff to do this properly
+// TODO: implement gltf::material double_sided and do backface culling conditionally
 // TODO: add parsing of emissive textures
 
 #[derive(Debug)]
@@ -916,16 +917,61 @@ impl Scene {
     #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
     fn save_scene_data_json(&self) {
         #[derive(serde::Serialize)]
+        struct IndexedGeometry {
+            index: usize,
+            #[serde(flatten)]
+            geometry: GpuTriangleGeometry,
+        }
+
+        #[derive(serde::Serialize)]
+        struct IndexedAttribute {
+            index: usize,
+            #[serde(flatten)]
+            attribute: GpuTriangleAttribute,
+        }
+
+        #[derive(serde::Serialize)]
+        struct IndexedMaterial {
+            index: usize,
+            #[serde(flatten)]
+            material: GpuMaterial,
+        }
+
+        #[derive(serde::Serialize)]
         struct SceneData {
-            geometries: Vec<GpuTriangleGeometry>,
-            attributes: Vec<GpuTriangleAttribute>,
-            materials: Vec<GpuMaterial>,
+            geometries: Vec<IndexedGeometry>,
+            attributes: Vec<IndexedAttribute>,
+            materials: Vec<IndexedMaterial>,
         }
 
         let scene_data = SceneData {
-            geometries: self.geometries.clone(),
-            attributes: self.attributes.clone(),
-            materials: self.materials.clone(),
+            geometries: self
+                .geometries
+                .iter()
+                .enumerate()
+                .map(|(index, geometry)| IndexedGeometry {
+                    index,
+                    geometry: *geometry,
+                })
+                .collect(),
+            attributes: self
+                .attributes
+                .iter()
+                .enumerate()
+                .map(|(index, attribute)| IndexedAttribute {
+                    index,
+                    attribute: *attribute,
+                })
+                .collect(),
+            materials: self
+                .materials
+                .iter()
+                .enumerate()
+                .map(|(index, material)| IndexedMaterial {
+                    index,
+                    material: *material,
+                })
+                .collect(),
         };
 
         let mut output_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -936,13 +982,13 @@ impl Scene {
             return;
         }
 
-        output_path.push("scene_data.json");
+        output_path.push("scene_data.yaml");
 
-        match serde_json::to_string_pretty(&scene_data) {
-            Ok(json) => match std::fs::write(&output_path, json) {
+        match serde_yaml::to_string(&scene_data) {
+            Ok(yaml) => match std::fs::write(&output_path, yaml) {
                 Ok(()) => {
                     log::info!(
-                        "Saved scene data JSON to {} (geometries: {}, attributes: {}, materials: {})",
+                        "Saved scene data YAML to {} (geometries: {}, attributes: {}, materials: {})",
                         output_path.display(),
                         self.geometries.len(),
                         self.attributes.len(),
@@ -950,11 +996,11 @@ impl Scene {
                     );
                 }
                 Err(e) => {
-                    log::error!("Failed to write scene data JSON: {e}");
+                    log::error!("Failed to write scene data YAML: {e}");
                 }
             },
             Err(e) => {
-                log::error!("Failed to serialize scene data to JSON: {e}");
+                log::error!("Failed to serialize scene data to YAML: {e}");
             }
         }
     }
